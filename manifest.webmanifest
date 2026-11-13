@@ -1,0 +1,19 @@
+{
+  "name": "CBM & Transitaire",
+  "short_name": "CBM Transitaire",
+  "description": "Calculateur CBM et coûts d'importation",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f7f5",
+  "theme_color": "#123c35",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
