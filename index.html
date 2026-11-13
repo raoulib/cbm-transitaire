@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#123c35">
+  <meta name="description" content="Calculateur de volume CBM et de coût de transport pour les importations.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon.svg">
+  <link rel="stylesheet" href="styles.css">
+  <title>CBM & Transitaire</title>
+</head>
+<body>
+  <header class="top">
+    <div class="brand-mark">📦</div>
+    <div><h1>CBM & Transitaire</h1><p>Calculateur d'importation · Alibaba → Niger</p></div>
+    <span class="offline" id="network">En ligne</span>
+  </header>
+  <main>
+    <nav class="tabs" aria-label="Navigation">
+      <button class="tab active" data-tab="calculator">Calculateur</button>
+      <button class="tab" data-tab="history">Historique</button>
+      <button class="tab" data-tab="settings">Tarifs</button>
+    </nav>
+    <section id="calculator" class="page active">
+      <div class="card">
+        <h2>Commande</h2>
+        <label>Nom de la commande<input id="orderName" value="Commande Alibaba" autocomplete="off"></label>
+        <div class="grid2">
+          <label>Prix marchandises (USD)<input id="goods" type="number" min="0" step="0.01" value="0"></label>
+          <label>Expédition fournisseur → transitaire (USD)<input id="china" type="number" min="0" step="0.01" value="0"></label>
+        </div>
+        <label>Taux de change (FCFA pour 1 USD)<input id="fx" type="number" min="1" step="1" value="600"></label>
+        <p class="hint">Saisis le taux réellement appliqué par ton moyen de paiement ou ton changeur.</p>
+      </div>
+      <div class="card">
+        <h2>Transport international</h2>
+        <div class="choice">
+          <label><input type="radio" name="mode" value="sea" checked> Maritime · CBM</label>
+          <label><input type="radio" name="mode" value="air"> Aérien · KG</label>
+        </div>
+        <div id="seaFields">
+          <label>Type d'emballage</label>
+          <div class="choice">
+            <label><input type="radio" name="pack" value="carton" checked> Carton</label>
+            <label><input type="radio" name="pack" value="caisse"> Caisse</label>
+          </div>
+          <div class="grid2">
+            <label>Longueur (cm)<input id="length" type="number" min="0.01" step="0.1" value="100"></label>
+            <label>Largeur (cm)<input id="width" type="number" min="0.01" step="0.1" value="50"></label>
+            <label>Hauteur (cm)<input id="height" type="number" min="0.01" step="0.1" value="40"></label>
+            <label>Nombre de colis identiques<input id="qty" type="number" min="1" step="1" value="1"></label>
+          </div>
+          <div class="volume"><span>Volume total estimé</span><strong id="volume">0,2000 CBM</strong><small id="unitVolume">0,2000 CBM par colis</small></div>
+        </div>
+        <div id="airFields" hidden>
+          <label>Poids total réel (kg)<input id="weight" type="number" min="0.01" step="0.01" value="10"></label>
+          <p class="hint">Le calcul aérien utilise le poids réel saisi. Si le transitaire facture au poids taxable, vérifie son mode de calcul.</p>
+        </div>
+        <label>Autres frais (FCFA)<input id="extra" type="number" min="0" step="1" value="0"></label>
+      </div>
+      <div class="card result-card">
+        <h2>Récapitulatif</h2>
+        <div class="line"><span>Marchandises + expédition locale</span><b id="usdTotal">0,00 USD</b></div>
+        <div class="line"><span>Montant converti en FCFA</span><b id="converted">0 FCFA</b></div>
+        <div class="line"><span>Tarif transport appliqué</span><b id="appliedRate">—</b></div>
+        <div class="line"><span>Transport international</span><b id="freight">0 FCFA</b></div>
+        <div class="line"><span>Autres frais</span><b id="extraDisplay">0 FCFA</b></div>
+        <div class="total"><span>COÛT TOTAL ESTIMÉ</span><strong id="grandTotal">0 FCFA</strong></div>
+        <p class="hint">Estimation hors frais non saisis : douane, taxes, assurance, manutention, livraison finale, etc.</p>
+        <div class="actions">
+          <button class="primary" id="saveOrder">Enregistrer la commande</button>
+          <button class="secondary" id="copyResult">Copier le rapport</button>
+          <button class="ghost" id="reset">Nouvelle commande</button>
+        </div>
+        <p id="feedback" class="feedback" role="status"></p>
+      </div>
+    </section>
+    <section id="history" class="page">
+      <div class="section-head"><div><h2>Historique</h2><p>Commandes enregistrées sur ce téléphone.</p></div><button class="danger small" id="clearHistory">Tout effacer</button></div>
+      <div id="historyList" class="history-list"><p class="empty">Aucune commande enregistrée.</p></div>
+    </section>
+    <section id="settings" class="page">
+      <div class="card">
+        <h2>Tarifs de ton transitaire</h2>
+        <p class="hint">Enregistre ici les tarifs habituels. Tu peux toujours les modifier pour une commande particulière.</p>
+        <label>Maritime · Carton (FCFA/CBM)<input id="cartonRate" type="number" min="0" step="1" placeholder="Ex. 150000"></label>
+        <label>Maritime · Caisse (FCFA/CBM)<input id="crateRate" type="number" min="0" step="1" placeholder="Ex. 180000"></label>
+        <label>Aérien (FCFA/kg)<input id="airRate" type="number" min="0" step="1" placeholder="Ex. 5000"></label>
+        <button class="primary full" id="saveRates">Enregistrer les tarifs</button>
+        <p id="settingsFeedback" class="feedback" role="status"></p>
+      </div>
+      <div class="card">
+        <h2>Installation</h2>
+        <p>Ouvre cette adresse HTTPS dans Chrome sur Android puis choisis <b>Installer l'application</b> ou <b>Ajouter à l'écran d'accueil</b>.</p>
+        <p class="hint">Les commandes et tarifs sont conservés localement dans le navigateur de ce téléphone. Pense à exporter ou copier tes informations importantes.</p>
+      </div>
+    </section>
+  </main>
+  <footer>CBM & Transitaire · Fonctionne hors connexion après le premier chargement</footer>
+  <script src="app.js"></script>
+</body>
+</html>
