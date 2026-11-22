@@ -660,22 +660,64 @@ public class MainActivity extends Activity {
             {"Disney+", "disney"}, {"Kodi", "kodi"}, {"Spotify", "spotify"}, {"Fichiers TV", "sendfiles"},
     };
 
+    /** Applis courantes lançables « à l'aveugle » : {clé, libellé, paquets possibles...}. */
+    private static final String[][] BLIND = {
+            {"youtube", "YouTube", "com.google.android.youtube.tv", "com.google.android.youtube",
+                    "com.liskovsoft.smarttubetv", "com.liskovsoft.smarttubetv.beta"},
+            {"iptv", "IPTV", "com.nst.iptvsmarterstvbox", "com.nst.iptvsmarterspro"},
+            {"chrome", "Chrome", "com.android.chrome"},
+            {"vlc", "VLC", "org.videolan.vlc"},
+            {"netflix", "Netflix", "com.netflix.ninja"},
+            {"kodi", "Kodi", "org.xbmc.kodi"},
+            {"spotify", "Spotify", "com.spotify.tv.android"},
+            {"prime", "Prime Video", "com.amazon.amazonvideo.livingroom"},
+            {"disney", "Disney+", "com.disney.disneyplus"},
+    };
+
+    private static String blindKey(String q) {
+        if (q.length() < 3) return null;
+        for (String[] g : BLIND) {
+            if (q.contains(g[0]) || g[0].contains(q)) return g[0];
+        }
+        return null;
+    }
+
     private static String appLabel(String pkg) {
+        if (pkg.startsWith("blind:")) {
+            for (String[] g : BLIND) if (g[0].equals(pkg.substring(6))) return g[1];
+        }
         String low = pkg.toLowerCase(Locale.ROOT);
         for (String[] k : KEYWORDS) {
             if (low.contains(k[1])) return k[0];
         }
         String last = pkg.substring(pkg.lastIndexOf('.') + 1);
-        return last.isEmpty() ? pkg : Character.toUpperCase(last.charAt(0)) + last.substring(1);
+        String t = last.replaceAll("(?i)(tvbox|android|app)$", "");
+        if (t.isEmpty()) t = last;
+        if (t.length() > 16) t = t.substring(0, 16) + "…";
+        return Character.toUpperCase(t.charAt(0)) + t.substring(1);
     }
 
-    /** Accepte "package:xxx" et "xxx/activité" (sortie de pm query-activities). */
+    private static boolean isNoise(String p) {
+        if (p.equals("com.android.chrome")) return false;
+        return p.equals("android") || p.startsWith("android.") || p.startsWith("com.android.")
+                || p.startsWith("com.mediatek") || p.startsWith("com.mstar") || p.startsWith("com.qualcomm")
+                || p.startsWith("com.google.android.gms") || p.startsWith("com.google.android.gsf")
+                || p.startsWith("com.google.android.syncadapters") || p.contains(".overlay")
+                || p.startsWith("org.chromium") || p.startsWith("com.svox");
+    }
+
+    /** Accepte "package:xxx", "xxx/activité", les lignes de packages.list et "Package [xxx]" (dumpsys). */
     private static Set<String> parseLaunchable(String out) {
         Set<String> set = new LinkedHashSet<>();
         for (String raw : out.split("\\r?\\n")) {
             String line = raw.trim();
             if (line.startsWith("package:")) {
                 set.add(line.substring(8).trim());
+            } else if (line.startsWith("Package [")) {
+                int e = line.indexOf(']');
+                if (e > 9) set.add(line.substring(9, e));
+            } else if (line.matches("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z0-9_]+)+\\s+\\d+\\s+.*")) {
+                set.add(line.substring(0, line.indexOf(' ')));
             } else if (line.indexOf('/') > 0 && line.indexOf(' ') < 0 && line.indexOf('.') > 0) {
                 set.add(line.substring(0, line.indexOf('/')));
             }
@@ -731,14 +773,27 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        adbRun("monkey -p " + pkg + " -c android.intent.category.LEANBACK_LAUNCHER 1; "
-                + "monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1", null);
+        List<String> pk = new ArrayList<>();
+        if (pkg.startsWith("blind:")) {
+            for (String[] g : BLIND) {
+                if (g[0].equals(pkg.substring(6))) {
+                    for (int i = 2; i < g.length; i++) pk.add(g[i]);
+                }
+            }
+        } else {
+            pk.add(pkg);
+        }
+        StringBuilder cmd = new StringBuilder();
+        for (String p : pk) {
+            cmd.append("monkey -p ").append(p).append(" -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1; ")
+                    .append("monkey -p ").append(p).append(" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1; ");
+        }
+        if (cmd.length() > 0) adbRun(cmd.toString(), null);
     }
 
-    /** Au premier branchement : propose YouTube, IPTV, Chrome, VLC... s'ils sont installés sur la TV. */
+    /** Au premier branchement : propose YouTube, IPTV, Chrome, VLC... (même si la liste de la TV est indisponible). */
     private void seedShortcuts(Set<String> installed) {
         if (prefs.getBoolean("sc_seeded2", false) || !loadShortcuts().isEmpty()) return;
-        if (installed.isEmpty()) return;
         List<String> l = new ArrayList<>();
         for (String[] k : KEYWORDS) {
             for (String pkg : installed) {
@@ -749,7 +804,13 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        if (l.isEmpty()) return;
+        if (l.isEmpty()) {
+            // liste indisponible : raccourcis par défaut, lancés « à l'aveugle »
+            l.add("blind:youtube");
+            l.add("blind:iptv");
+            l.add("blind:chrome");
+            l.add("blind:vlc");
+        }
         saveShortcuts(l);
         prefs.edit().putBoolean("sc_seeded2", true).apply();
         rebuildShortcuts();
@@ -760,30 +821,48 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    /** Libellés courts et uniques pour une liste de paquets. */
+    private static String[] labelsFor(List<String> pkgs) {
+        String[] out = new String[pkgs.size()];
+        Map<String, Integer> seen = new HashMap<>();
+        for (int i = 0; i < out.length; i++) {
+            String lab = appLabel(pkgs.get(i));
+            Integer c = seen.get(lab);
+            seen.put(lab, c == null ? 1 : c + 1);
+            out[i] = c == null ? lab : lab + " (" + (c + 1) + ")";
+        }
+        return out;
+    }
+
     private void showAddShortcut() {
         if (!wifiOk()) {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        listApps(false, (found, raw) -> {
-            Set<String> set = new LinkedHashSet<>(found);
-            set.removeAll(loadShortcuts());
-            final List<String> pkgs = new ArrayList<>(set);
-            Collections.sort(pkgs);
+        listApps(true, (found, raw) -> {
+            final List<String> pkgs = new ArrayList<>();
+            final boolean fallback = found.isEmpty();
+            if (fallback) {
+                for (String[] g : BLIND) pkgs.add("blind:" + g[0]);
+            } else {
+                pkgs.addAll(found);
+            }
+            pkgs.removeAll(loadShortcuts());
+            Collections.sort(pkgs, (a, b) -> appLabel(a).compareToIgnoreCase(appLabel(b)));
             if (pkgs.isEmpty()) {
                 toast("Aucune application à ajouter.");
                 return;
             }
-            final String[] items = new String[pkgs.size()];
-            for (int i = 0; i < items.length; i++) items[i] = appLabel(pkgs.get(i)) + "  (" + pkgs.get(i) + ")";
-            new AlertDialog.Builder(this)
-                    .setTitle("Ajouter un raccourci")
-                    .setItems(items, (d, w) -> {
+            AlertDialog.Builder b = new AlertDialog.Builder(this)
+                    .setTitle(fallback ? "Applis courantes (liste de la TV indisponible)" : "Ajouter un raccourci")
+                    .setItems(labelsFor(pkgs), (d, w) -> {
                         List<String> l = loadShortcuts();
                         l.add(pkgs.get(w));
                         saveShortcuts(l);
                         rebuildShortcuts();
-                    }).show();
+                    });
+            if (fallback) b.setNeutralButton("Détails", (d, w) -> showRawDialog("Réponse de la TV", raw));
+            b.show();
         });
     }
 
@@ -914,50 +993,70 @@ public class MainActivity extends Activity {
         void on(Set<String> packages, String raw);
     }
 
-    /** Plusieurs méthodes, délais longs (la TV est lente) ; affiche la sortie brute si rien n'est trouvé. */
+    /**
+     * Cherche les applis de la TV par plusieurs méthodes (délais longs : la TV est lente).
+     * Le callback est toujours appelé (ensemble vide si rien) avec un texte de diagnostic.
+     */
     private void listApps(final boolean silent, final AppsCb cb) {
         exec.execute(() -> {
+            StringBuilder raw = new StringBuilder();
+            Set<String> set = new LinkedHashSet<>();
+            String error = null;
+            adb.trace = new StringBuilder();
             try {
-                StringBuilder raw = new StringBuilder();
-                Set<String> set = new LinkedHashSet<>();
-                String[] cmds = {
+                String[] first = {
                         "pm list packages -3 2>&1",
                         "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER 2>&1",
                         "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LAUNCHER 2>&1",
                 };
-                for (String c : cmds) {
+                for (String c : first) {
                     String out = adb.shell(c, 30000);
-                    raw.append("$ ").append(c.substring(0, Math.min(40, c.length()))).append("\n").append(out).append("\n");
+                    raw.append("$ ").append(c, 0, Math.min(34, c.length())).append("\n").append(out.trim()).append("\n");
                     set.addAll(parseLaunchable(out));
                 }
                 if (set.isEmpty()) {
-                    String out = adb.shell("cmd package list packages 2>&1", 30000);
-                    raw.append("$ cmd package list packages\n").append(out).append("\n");
-                    set.addAll(parseLaunchable(out));
-                }
-                final Set<String> fs = set;
-                final String fr = raw.toString();
-                onUi(() -> {
-                    if (fs.isEmpty()) {
-                        if (!silent) {
-                            new AlertDialog.Builder(this)
-                                    .setTitle("Aucune application détectée")
-                                    .setMessage("Réponse de la TV :\n\n" + fr.substring(0, Math.min(900, fr.length())))
-                                    .setPositiveButton("OK", null).show();
-                        }
-                    } else {
-                        cb.on(fs, fr);
+                    String[] more = {
+                            "pm list packages -s 2>&1",
+                            "cat /data/system/packages.list 2>&1",
+                            "dumpsys package packages 2>&1 | grep -E '^ +Package \\['",
+                    };
+                    for (String c : more) {
+                        String out = adb.shell(c, 30000);
+                        raw.append("$ ").append(c, 0, Math.min(34, c.length())).append("\n").append(out.trim()).append("\n");
+                        for (String pkg : parseLaunchable(out)) if (!isNoise(pkg)) set.add(pkg);
+                        if (!set.isEmpty()) break;
                     }
-                });
+                }
             } catch (IOException e) {
-                final String msg = e.getMessage();
-                onUi(() -> {
-                    setStatus("Liste des applications impossible : " + msg, RED);
+                error = e.getMessage();
+                raw.append("Erreur : ").append(error).append("\n");
+            }
+            StringBuilder tr = adb.trace;
+            adb.trace = null;
+            if (tr != null) raw.append("\n--- échanges ADB ---\n").append(tr);
+            final Set<String> fs = set;
+            final String fr = raw.toString();
+            final String ferr = error;
+            onUi(() -> {
+                if (ferr != null) {
+                    setStatus("Liste des applications impossible : " + ferr, RED);
                     setHeaderCollapsed(false);
                     refreshStates();
-                });
-            }
+                }
+                cb.on(fs, fr);
+            });
         });
+    }
+
+    private void showRawDialog(String title, String raw) {
+        TextView tv = new TextView(this);
+        tv.setText(raw.substring(0, Math.min(2500, raw.length())));
+        tv.setTextIsSelectable(true);
+        tv.setTextSize(11);
+        tv.setPadding(dp(18), dp(8), dp(18), dp(8));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        new AlertDialog.Builder(this).setTitle(title).setView(sv).setPositiveButton("OK", null).show();
     }
 
     // ------------------------------------------------------------------ commande vocale
@@ -1067,30 +1166,66 @@ public class MainActivity extends Activity {
         } else if (has(n, "recule")) {
             sendAdbKey(89);
         } else {
-            for (String p : new String[]{"ecris ", "tape ", "saisis ", "dicte ", "cherche ", "recherche ", "trouve "}) {
+            // recherche ciblée : « cherche X sur youtube / google »
+            Matcher sm = Pattern.compile("^(?:cherche|recherche|trouve|mets|met) (.+) sur (youtube|google)$").matcher(n);
+            if (sm.find()) {
+                searchWeb(sm.group(1), sm.group(2).equals("youtube"));
+                return;
+            }
+            if (n.equals("recherche vocale") || n.equals("assistant") || n.equals("assistant vocal")) {
+                sendAdbKey(231); // assistant vocal de la TV
+                return;
+            }
+            for (String p : new String[]{"ecris ", "tape ", "saisis ", "dicte "}) {
                 if (n.startsWith(p)) {
                     sendText(n.substring(p.length()));
                     return;
                 }
             }
-            for (String p : new String[]{"ouvre ", "ouvrir ", "lance ", "lancer ", "demarre ", "demarrer ", "va sur ", "mets ", "met ", "affiche "}) {
+            for (String p : new String[]{"cherche ", "recherche ", "trouve "}) {
                 if (n.startsWith(p)) {
-                    openAppByName(n.substring(p.length()).replaceFirst("^((l|le|la|les|un|une|application|appli) )+", ""));
+                    sendText(n.substring(p.length()));
+                    ui.postDelayed(() -> sendAdbKey(66), 900); // valide la recherche
                     return;
                 }
             }
-            new AlertDialog.Builder(this)
-                    .setTitle("Commande non reconnue")
-                    .setMessage("J'ai entendu : « " + heard + " »\n\nExemples : « volume plus », « muet », « chaîne 5 », « ouvre YouTube », « accueil », « retour », « écris bonjour ».")
-                    .setPositiveButton("Écrire sur la TV", (d, w) -> sendText(heard))
-                    .setNegativeButton("Annuler", null)
-                    .show();
+            String appName = n;
+            for (String p : new String[]{"ouvre ", "ouvrir ", "lance ", "lancer ", "demarre ", "demarrer ", "va sur ", "mets ", "met ", "affiche "}) {
+                if (n.startsWith(p)) {
+                    appName = n.substring(p.length()).replaceFirst("^((l|le|la|les|un|une|application|appli) )+", "");
+                    break;
+                }
+            }
+            // un simple nom d'application suffit : « YouTube », « Darty »…
+            openAppByName(appName, () -> showUnknownVoice(heard));
         }
     }
 
-    private void openAppByName(final String name) {
-        final String q = name.replace(" ", "");
-        if (q.isEmpty()) return;
+    private void showUnknownVoice(final String heard) {
+        new AlertDialog.Builder(this)
+                .setTitle("Commande non reconnue")
+                .setMessage("J'ai entendu : « " + heard + " »\n\nExemples : « volume plus », « muet », « chaîne 5 », « YouTube », « ouvre IPTV », "
+                        + "« cherche chansons sur YouTube », « accueil », « retour », « écris bonjour ».")
+                .setPositiveButton("Écrire sur la TV", (d, w) -> sendText(heard))
+                .setNegativeButton("Annuler", null)
+                .show();
+    }
+
+    private void searchWeb(String q, boolean youtube) {
+        try {
+            String enc = java.net.URLEncoder.encode(q, "UTF-8");
+            String url = youtube ? "https://www.youtube.com/results?search_query=" + enc
+                    : "https://www.google.com/search?q=" + enc;
+            adbRun("am start -a android.intent.action.VIEW -d '" + url + "'", null);
+        } catch (java.io.UnsupportedEncodingException ignored) { }
+    }
+
+    private void openAppByName(final String name, final Runnable notFound) {
+        final String q = norm(name).replace(" ", "");
+        if (q.isEmpty()) {
+            if (notFound != null) notFound.run();
+            return;
+        }
         for (String pkg : loadShortcuts()) {
             String lab = norm(appLabel(pkg)).replace(" ", "");
             if (lab.contains(q) || q.contains(lab)) {
@@ -1102,7 +1237,7 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        listApps(false, (found, raw) -> {
+        listApps(true, (found, raw) -> {
             for (String pkg : found) {
                 String lab = norm(appLabel(pkg)).replace(" ", "");
                 if (pkg.toLowerCase(Locale.ROOT).contains(q) || lab.equals(q)) {
@@ -1110,7 +1245,14 @@ public class MainActivity extends Activity {
                     return;
                 }
             }
-            toast("Application introuvable : " + name);
+            // liste indisponible ou nom absent : essai « à l'aveugle » pour les applis courantes
+            String g = blindKey(q);
+            if (g != null) {
+                launchApp("blind:" + g);
+                return;
+            }
+            if (notFound != null) notFound.run();
+            else toast("Application introuvable : " + name);
         });
     }
 
@@ -1502,20 +1644,30 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        listApps(false, (found, raw) -> {
-            List<String> pkgs = new ArrayList<>(found);
-            Collections.sort(pkgs);
-            pkgs.add(0, "⚙ Paramètres Android");
-            final String[] items = pkgs.toArray(new String[0]);
-            new AlertDialog.Builder(this)
-                    .setTitle("Lancer sur la TV")
+        listApps(true, (found, raw) -> {
+            final boolean fallback = found.isEmpty();
+            final List<String> pkgs = new ArrayList<>();
+            if (fallback) {
+                for (String[] g : BLIND) pkgs.add("blind:" + g[0]);
+            } else {
+                pkgs.addAll(found);
+            }
+            Collections.sort(pkgs, (x, y) -> appLabel(x).compareToIgnoreCase(appLabel(y)));
+            final String[] labs = labelsFor(pkgs);
+            final String[] items = new String[labs.length + 1];
+            items[0] = "⚙ Paramètres Android";
+            System.arraycopy(labs, 0, items, 1, labs.length);
+            AlertDialog.Builder dlg = new AlertDialog.Builder(this)
+                    .setTitle(fallback ? "Applis courantes (liste de la TV indisponible)" : "Lancer sur la TV")
                     .setItems(items, (d, w) -> {
                         if (w == 0) {
                             adbRun("am start -a android.settings.SETTINGS", null);
                         } else {
-                            launchApp(items[w]);
+                            launchApp(pkgs.get(w - 1));
                         }
-                    }).show();
+                    });
+            if (fallback) dlg.setNeutralButton("Détails", (d, w) -> showRawDialog("Réponse de la TV", raw));
+            dlg.show();
         });
     }
 
