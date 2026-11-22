@@ -34,6 +34,10 @@ public class AdbSelfTest {
         check("ok:echo second".equals(out2), "2e commande = " + out2);
         String out3 = c.exec("echo third", 5000);
         check("ok:echo third".equals(out3), "exec: = " + out3);
+        String out4 = c.shell("slow", 500);
+        check(out4.isEmpty() && c.isConnected(), "commande lente : fin sans couper la connexion (sortie='" + out4 + "')");
+        String out5 = c.exec("echo fifth", 5000);
+        check("ok:echo fifth".equals(out5), "commande suivante OK après un délai dépassé = " + out5);
         c.close();
         srv.join(3000);
         if (failure != null) { System.out.println("ECHEC : " + failure); System.exit(1); }
@@ -77,7 +81,7 @@ public class AdbSelfTest {
         // Variante de référence : SHA1withRSA ne s'applique pas ici (le token est déjà le hash) -> on vérifie aussi la longueur
         check(sig.length == 256, "signature = 256 octets");
         wr(out, CNXN, 0x01000000, 4096, "device::\0".getBytes());
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 5; i++) {
             d = rd(in, h);
             check(h[0] == OPEN, "serveur: reçoit OPEN");
             String cmd = new String(d, 0, d.length - 1, StandardCharsets.UTF_8);
@@ -86,6 +90,11 @@ public class AdbSelfTest {
             lastShell = cmd.substring(isShell ? 6 : 5);
             int local = h[1], remote = 100 + i;
             wr(out, OKAY, remote, local, null);
+            if (i == 3) { // commande « lente » : jamais de réponse, le client doit fermer le flux lui-même
+                rd(in, h);
+                check(h[0] == CLSE, "serveur: le client ferme le flux lent (CLSE)");
+                continue;
+            }
             wr(out, WRTE, remote, local, ("ok:" + lastShell).getBytes());
             rd(in, h); check(h[0] == OKAY, "serveur: client acquitte WRTE");
             wr(out, CLSE, remote, local, null);

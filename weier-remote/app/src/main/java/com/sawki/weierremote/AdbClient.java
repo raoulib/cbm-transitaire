@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -154,9 +155,20 @@ public class AdbClient implements Closeable {
             int local = nextLocalId++;
             send(A_OPEN, local, 0, (prefix + command + "\0").getBytes(StandardCharsets.UTF_8));
             ByteArrayOutputStream result = new ByteArrayOutputStream();
+            int remote = 0;
             while (true) {
-                Message m = read();
+                Message m;
+                try {
+                    m = read();
+                } catch (SocketTimeoutException e) {
+                    // commande trop lente : on ferme ce flux SANS couper la connexion à la TV
+                    try {
+                        send(A_CLSE, local, remote, null);
+                    } catch (IOException ignored) { }
+                    return result.toString("UTF-8");
+                }
                 if (m.arg1 != local) continue; // message d'un autre flux : on ignore
+                remote = m.arg0;
                 if (m.cmd == A_WRTE) {
                     result.write(m.data);
                     send(A_OKAY, local, m.arg0, null);

@@ -773,22 +773,21 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        List<String> pk = new ArrayList<>();
+        StringBuilder pk = new StringBuilder();
         if (pkg.startsWith("blind:")) {
             for (String[] g : BLIND) {
                 if (g[0].equals(pkg.substring(6))) {
-                    for (int i = 2; i < g.length; i++) pk.add(g[i]);
+                    for (int i = 2; i < g.length; i++) pk.append(g[i]).append(' ');
                 }
             }
         } else {
-            pk.add(pkg);
+            pk.append(pkg);
         }
-        StringBuilder cmd = new StringBuilder();
-        for (String p : pk) {
-            cmd.append("monkey -p ").append(p).append(" -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1; ")
-                    .append("monkey -p ").append(p).append(" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1; ");
-        }
-        if (cmd.length() > 0) adbRun(cmd.toString(), null);
+        if (pk.length() == 0) return;
+        // une seule commande « am start » par paquet (et par catégorie) : s'arrête dès qu'une appli démarre
+        adbRun("for p in " + pk.toString().trim() + "; do for c in LEANBACK_LAUNCHER LAUNCHER; do "
+                + "o=$(am start -a android.intent.action.MAIN -c android.intent.category.$c -p $p 2>&1); "
+                + "case \"$o\" in *rror*) ;; *) exit 0;; esac; done; done", null);
     }
 
     /** Au premier branchement : propose YouTube, IPTV, Chrome, VLC... (même si la liste de la TV est indisponible). */
@@ -1537,12 +1536,12 @@ public class MainActivity extends Activity {
 
     private String shellWithReconnect(String cmd, boolean wantOutput) throws IOException {
         try {
-            return wantOutput ? queryTv(cmd, 30000) : adb.shell(cmd);
+            return wantOutput ? queryTv(cmd, 30000) : adb.shell(cmd, 20000);
         } catch (IOException first) {
             String ip = prefs.getString("ip", "");
             if (ip.isEmpty()) throw first;
             adb.connect(ip, ADB_PORT, null);
-            return wantOutput ? queryTv(cmd, 30000) : adb.shell(cmd);
+            return wantOutput ? queryTv(cmd, 30000) : adb.shell(cmd, 20000);
         }
     }
 
