@@ -1,0 +1,41 @@
+name: Télécommande WEIER - APK
+
+on:
+  push:
+    paths:
+      - 'weier-remote/**'
+      - '.github/workflows/weier-remote-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: weier-remote
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Test du client ADB (JVM)
+        run: |
+          mkdir -p /tmp/adbt
+          javac -d /tmp/adbt app/src/main/java/com/sawki/weierremote/AdbClient.java tools/AdbSelfTest.java
+          java -cp /tmp/adbt AdbSelfTest
+
+      - name: Licences et SDK Android
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Compilation (debug)
+        run: ./gradlew --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telecommande-weier-apk
+          path: weier-remote/app/build/outputs/apk/debug/app-debug.apk
