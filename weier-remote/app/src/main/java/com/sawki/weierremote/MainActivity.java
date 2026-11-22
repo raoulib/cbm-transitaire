@@ -26,6 +26,12 @@ import android.widget.Toast;
 import android.widget.ToggleButton;
 import android.view.GestureDetector;
 import android.widget.AdapterView;
+import android.widget.FrameLayout;
+import android.content.Context;
+import android.view.ViewConfiguration;
+import android.view.inputmethod.InputMethodManager;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import java.io.IOException;
 import java.net.Inet4Address;
@@ -73,6 +79,13 @@ public class MainActivity extends Activity {
     private TextView status;
     private EditText ipField;
     private RKey repeatKey;
+    private View remoteView, mouseView;
+    private TextView padView;
+    private Button padModeButton;
+    private boolean mouseOn = false;
+    private boolean pointerMode = true;
+    private int tvW = 1920, tvH = 1080;
+    private final Map<LinearLayout, List<String>> rowKeys = new HashMap<>();
     private final Runnable repeater = new Runnable() {
         @Override public void run() {
             if (repeatKey != null) {
@@ -93,6 +106,7 @@ public class MainActivity extends Activity {
         try {
             mode = Mode.valueOf(prefs.getString("mode", "AUTO"));
         } catch (IllegalArgumentException ignored) { }
+        pointerMode = prefs.getBoolean("pointer", true);
         buildUi();
         refreshStates();
         if (!prefs.getString("ip", "").isEmpty()) connectTv();
@@ -144,7 +158,14 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(10), dp(14), dp(10), dp(24));
         scroll.addView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scroll);
+        remoteView = scroll;
+        mouseView = buildMouseView();
+        mouseView.setVisibility(View.GONE);
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(BG);
+        frame.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        frame.addView(mouseView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(frame);
 
         // --- connexion
         ipField = new EditText(this);
@@ -213,43 +234,12 @@ public class MainActivity extends Activity {
         root.addView(row(key("mouse"), key("browser"), key("index")));
         root.addView(row(key("hold"), key("cancel"), key("size")));
 
-        // --- clavier
-        root.addView(sectionTitle("Clavier (saisie sur la TV — WiFi)"));
-        EditText text = new EditText(this);
-        text.setHint("Texte à envoyer");
-        text.setHintTextColor(Color.GRAY);
-        text.setTextColor(Color.WHITE);
-        text.setSingleLine(true);
-        Button send = textButton("Envoyer", v -> {
-            String t = text.getText().toString();
-            if (!t.isEmpty()) {
-                sendText(t);
-                text.setText("");
-            }
-        });
-        Button del = textButton("⌫", v -> sendAdbKey(67));
-        Button enter = textButton("↵", v -> sendAdbKey(66));
-        LinearLayout kb = new LinearLayout(this);
-        kb.setOrientation(LinearLayout.HORIZONTAL);
-        kb.setGravity(Gravity.CENTER_VERTICAL);
-        kb.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 3f));
-        kb.addView(send, new LinearLayout.LayoutParams(0, dp(44), 2f));
-        kb.addView(del, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        kb.addView(enter, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        root.addView(kb);
-
-        // --- pavé tactile
-        root.addView(sectionTitle("Pavé tactile (WiFi)"));
-        root.addView(touchpad(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
-
         // --- outils
         root.addView(spacerView(dp(10)));
         LinearLayout tools = new LinearLayout(this);
         tools.setOrientation(LinearLayout.HORIZONTAL);
         addTool(tools, "Applications", v -> showApps());
-        addTool(tools, "Codes IR", v -> showIrLab());
-        addTool(tools, "Diagnostic", v -> showDiagnostic());
-        addTool(tools, "Aide", v -> showHelp());
+        addTool(tools, "Plus ⋯", v -> showMore());
         root.addView(tools);
     }
 
@@ -286,11 +276,16 @@ public class MainActivity extends Activity {
     private LinearLayout row(View... views) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
+        List<String> ids = new ArrayList<>();
         for (View v : views) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
             lp.setMargins(dp(4), dp(4), dp(4), dp(4));
             r.addView(v, lp);
+            for (Map.Entry<String, Button> en : keyButtons.entrySet()) {
+                if (en.getValue() == v) ids.add(en.getKey());
+            }
         }
+        rowKeys.put(r, ids);
         return r;
     }
 
@@ -368,18 +363,117 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private View touchpad() {
-        TextView pad = new TextView(this);
-        pad.setText("Glisser = flèches\nToucher = OK\nDouble toucher = Retour");
-        pad.setGravity(Gravity.CENTER);
-        pad.setTextColor(Color.GRAY);
+    // ------------------------------------------------------------------ mode souris
+
+    private View buildMouseView() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(BG);
+        box.setPadding(dp(10), dp(14), dp(10), dp(10));
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Souris");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(18);
+        bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        padModeButton = textButton("", x -> {
+            pointerMode = !pointerMode;
+            prefs.edit().putBoolean("pointer", pointerMode).apply();
+            updatePadHint();
+        });
+        LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(dp(140), dp(40));
+        l1.setMargins(0, 0, dp(8), 0);
+        bar.addView(padModeButton, l1);
+        bar.addView(textButton("Fermer ✕", x -> setMouse(false)), new LinearLayout.LayoutParams(dp(100), dp(40)));
+        box.addView(bar);
+
+        padView = new TextView(this);
+        padView.setGravity(Gravity.CENTER);
+        padView.setTextColor(Color.GRAY);
+        padView.setTextSize(15);
         GradientDrawable d = new GradientDrawable();
         d.setColor(Color.parseColor("#1E1E1E"));
-        d.setCornerRadius(dp(14));
-        pad.setBackground(d);
+        d.setCornerRadius(dp(16));
+        padView.setBackground(d);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        plp.setMargins(0, dp(10), 0, dp(10));
+        box.addView(padView, plp);
+        setupPad();
+        updatePadHint();
+
+        LinearLayout quick = new LinearLayout(this);
+        quick.setOrientation(LinearLayout.HORIZONTAL);
+        addQuick(quick, "◀ Retour", 4);
+        addQuick(quick, "Accueil", 3);
+        addQuick(quick, "OK", 23);
+        addQuick(quick, "Menu", 82);
+        box.addView(quick);
+
+        final EditText text = new EditText(this);
+        text.setHint("Texte à envoyer à la TV");
+        text.setHintTextColor(Color.GRAY);
+        text.setTextColor(Color.WHITE);
+        text.setSingleLine(true);
+        text.setImeOptions(EditorInfo.IME_ACTION_SEND);
+        final Runnable sendIt = () -> {
+            String t = text.getText().toString();
+            if (!t.isEmpty()) {
+                sendText(t);
+                text.setText("");
+            }
+        };
+        text.setOnEditorActionListener((tv, action, ev) -> {
+            if (action == EditorInfo.IME_ACTION_SEND) {
+                sendIt.run();
+                return true;
+            }
+            return false;
+        });
+        LinearLayout kb = new LinearLayout(this);
+        kb.setOrientation(LinearLayout.HORIZONTAL);
+        kb.setGravity(Gravity.CENTER_VERTICAL);
+        kb.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 3f));
+        kb.addView(textButton("Envoyer", x -> sendIt.run()), new LinearLayout.LayoutParams(0, dp(44), 2f));
+        kb.addView(textButton("⌫", x -> sendAdbKey(67)), new LinearLayout.LayoutParams(0, dp(44), 1f));
+        kb.addView(textButton("↵", x -> sendAdbKey(66)), new LinearLayout.LayoutParams(0, dp(44), 1f));
+        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        klp.setMargins(0, dp(8), 0, 0);
+        box.addView(kb, klp);
+        return box;
+    }
+
+    private void addQuick(LinearLayout parent, String label, final int code) {
+        Button b = textButton(label, x -> sendAdbKey(code));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        lp.setMargins(dp(3), 0, dp(3), 0);
+        parent.addView(b, lp);
+    }
+
+    private void updatePadHint() {
+        padView.setText(pointerMode
+                ? "Cette zone représente l'écran de la TV\n\nToucher = clic\nGlisser = balayer / défiler\nMaintenir = appui long"
+                : "Glisser = flèches\nToucher = OK\nDouble toucher = Retour");
+        padModeButton.setText(pointerMode ? "Mode : Pointeur" : "Mode : Flèches");
+    }
+
+    private int mapX(float x, int w) {
+        return Math.max(0, Math.min(tvW - 1, (int) (x / w * tvW)));
+    }
+
+    private int mapY(float y, int h) {
+        return Math.max(0, Math.min(tvH - 1, (int) (y / h * tvH)));
+    }
+
+    private void setupPad() {
         final int step = dp(48);
+        final int slop = ViewConfiguration.get(this).getScaledTouchSlop() * 2;
         final float[] acc = new float[2];
-        GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+        final float[] st = new float[3]; // x, y, déplacé (0/1)
+        final long[] t0 = new long[1];
+        final GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) {
                 acc[0] = 0; acc[1] = 0;
                 return true;
@@ -405,8 +499,75 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
-        pad.setOnTouchListener((v, e) -> gd.onTouchEvent(e));
-        return pad;
+        padView.setOnTouchListener((v, e) -> {
+            if (!pointerMode) return gd.onTouchEvent(e);
+            int action = e.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                st[0] = e.getX(); st[1] = e.getY(); st[2] = 0;
+                t0[0] = e.getEventTime();
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                if (Math.hypot(e.getX() - st[0], e.getY() - st[1]) > slop) st[2] = 1;
+            } else if (action == MotionEvent.ACTION_UP) {
+                int w = Math.max(1, v.getWidth());
+                int h = Math.max(1, v.getHeight());
+                long dt = e.getEventTime() - t0[0];
+                int x1 = mapX(st[0], w), y1 = mapY(st[1], h);
+                int x2 = mapX(e.getX(), w), y2 = mapY(e.getY(), h);
+                v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                if (st[2] == 0) {
+                    if (dt > 600) adbRun("input swipe " + x1 + " " + y1 + " " + x1 + " " + y1 + " 800", null);
+                    else adbRun("input tap " + x1 + " " + y1, null);
+                } else {
+                    long dur = Math.max(120, Math.min(1200, dt));
+                    adbRun("input swipe " + x1 + " " + y1 + " " + x2 + " " + y2 + " " + dur, null);
+                }
+            }
+            return true;
+        });
+    }
+
+    private void setMouse(boolean on) {
+        if (on && !wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        mouseOn = on;
+        remoteView.setVisibility(on ? View.GONE : View.VISIBLE);
+        mouseView.setVisibility(on ? View.VISIBLE : View.GONE);
+        if (!on) {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            View f = getCurrentFocus();
+            if (imm != null && f != null) imm.hideSoftInputFromWindow(f.getWindowToken(), 0);
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (mouseOn) setMouse(false);
+        else super.onBackPressed();
+    }
+
+    private void parseScreenSize(String out) {
+        Matcher m = Pattern.compile("(\\d{3,5})x(\\d{3,5})").matcher(out);
+        int w = 0, h = 0;
+        while (m.find()) {
+            w = Integer.parseInt(m.group(1));
+            h = Integer.parseInt(m.group(2));
+        }
+        if (w > 0 && h > 0) {
+            tvW = w;
+            tvH = h;
+        }
+    }
+
+    private void showMore() {
+        final String[] items = {"Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
+        new AlertDialog.Builder(this)
+                .setItems(items, (d, w) -> {
+                    if (w == 0) showIrLab();
+                    else if (w == 1) showDiagnostic();
+                    else showHelp();
+                }).show();
     }
 
     private void setStatus(String s, int color) {
@@ -438,11 +599,26 @@ public class MainActivity extends Activity {
 
     private void applyAlpha(RKey k) {
         Button b = keyButtons.get(k.id);
-        if (b != null) b.setAlpha(wifiRoute(k) || irRoute(k) ? 1f : 0.4f);
+        if (b != null) b.setAlpha(wifiRoute(k) || irRoute(k) || k.id.equals("mouse") ? 1f : 0.4f);
     }
 
     private void refreshStates() {
-        for (RKey k : RKey.ALL.values()) applyAlpha(k);
+        for (RKey k : RKey.ALL.values()) {
+            applyAlpha(k);
+            Button kb = keyButtons.get(k.id);
+            if (kb != null) {
+                boolean usable = k.adb >= 0 || irCmd(k.id) >= 0 || k.id.equals("mouse");
+                kb.setVisibility(usable ? View.VISIBLE : View.GONE);
+            }
+        }
+        for (Map.Entry<LinearLayout, List<String>> r : rowKeys.entrySet()) {
+            boolean any = false;
+            for (String id : r.getValue()) {
+                Button kb = keyButtons.get(id);
+                if (kb != null && kb.getVisibility() == View.VISIBLE) any = true;
+            }
+            r.getKey().setVisibility(any ? View.VISIBLE : View.GONE);
+        }
         for (Button mb : modeButtons) {
             boolean on = mb.getTag() == mode;
             styleButton(mb, on ? Color.parseColor("#1565C0") : KEY_BG, Color.WHITE);
@@ -452,6 +628,10 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ envoi des commandes
 
     private void press(RKey k) {
+        if (k.id.equals("mouse")) {
+            setMouse(!mouseOn);
+            return;
+        }
         boolean wifi = wifiOk();
         boolean useIr;
         if (mode == Mode.IR) useIr = true;
@@ -541,6 +721,7 @@ public class MainActivity extends Activity {
                         setStatus("Acceptez la demande sur l'écran de la TV (cochez « Toujours autoriser »)…", ORANGE)));
                 onUi(() -> {
                     setStatus("Connecté à " + ip + " (WiFi)", GREEN);
+                    adbRun("wm size", this::parseScreenSize);
                     refreshStates();
                 });
             } catch (IOException e) {
@@ -912,6 +1093,7 @@ public class MainActivity extends Activity {
                 + "Le téléphone doit avoir un émetteur IR et être pointé vers la TV.\n\n"
                 + "MODES\n"
                 + "Auto : WiFi si connecté, sinon infrarouge (Power utilise l'IR si son code est enregistré).\n"
+                + "MOUSE : ouvre le mode souris (zone tactile + clavier) ; « Fermer » ou Retour revient à la télécommande.\n"
                 + "Touches grisées : indisponibles dans le mode actuel (pas de connexion, ou code IR inconnu).";
         new AlertDialog.Builder(this)
                 .setTitle("Aide")
