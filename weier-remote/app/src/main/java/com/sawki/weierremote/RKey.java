@@ -25,7 +25,7 @@ final class RKey {
         add("mute", "Mute", 164, false);
         for (int i = 0; i <= 9; i++) add("n" + i, String.valueOf(i), 7 + i, false);
         add("freeze", "FREEZE", -1, false);
-        add("recall", "Retour chaîne", 229, false);
+        add("recall", "Rappel", 229, false);
         add("pmode", "P.MODE", -1, false);
         add("smode", "S.MODE", -1, false);
         add("sleep", "SLEEP", 223, false);

@@ -171,19 +171,17 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(BG);
-        scroll.setFillViewport(true);
+        // La télécommande tient sur un seul écran : les rangées se partagent la hauteur disponible.
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(10), dp(6), dp(10), dp(24));
-        scroll.addView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        remoteView = scroll;
+        root.setBackgroundColor(BG);
+        root.setPadding(dp(10), dp(6), dp(10), dp(8));
+        remoteView = root;
         mouseView = buildMouseView();
         mouseView.setVisibility(View.GONE);
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(BG);
-        frame.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        frame.addView(root, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.addView(mouseView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(frame);
 
@@ -238,56 +236,51 @@ public class MainActivity extends Activity {
         headerBox.addView(spacerView(dp(8)));
 
 
-        // --- télécommande (même disposition que l'originale)
+        // --- télécommande (une seule page, sans défilement)
         Button micBtn = textButton("🎤", v -> startVoice(false));
         micBtn.setTextSize(18);
-        root.addView(row(key("power"), gearButton, micBtn, key("mute")));
-        root.addView(row(key("n1"), key("n2"), key("n3")));
-        root.addView(row(key("n4"), key("n5"), key("n6")));
-        root.addView(row(key("n7"), key("n8"), key("n9")));
-        root.addView(row(key("freeze"), key("n0"), key("recall")));
-        root.addView(row(key("pmode"), key("smode"), key("sleep")));
-
-        LinearLayout vc = new LinearLayout(this);
-        vc.setOrientation(LinearLayout.HORIZONTAL);
-        vc.addView(column(key("volup"), key("voldown")), weight());
-        vc.addView(column(key("ttx"), key("nicam")), weight());
-        vc.addView(column(key("chup"), key("chdown")), weight());
-        root.addView(vc);
-
-        root.addView(row(key("fav"), key("home"), key("aspect")));
-        root.addView(row(key("display"), key("up"), key("source")));
-        root.addView(row(key("left"), key("enter"), key("right")));
-        root.addView(row(key("menu"), key("down"), key("exit")));
-        root.addView(row(key("red"), key("green"), key("yellow"), key("blue")));
-        root.addView(row(key("rew"), key("play"), key("ff")));
-        root.addView(row(key("prev"), key("stop"), key("next")));
-        root.addView(row(key("mouse"), key("browser"), key("index")));
-        root.addView(row(key("hold"), key("cancel"), key("size")));
+        addRow(root, key("power"), gearButton, micBtn, key("mute"));
+        addRow(root, key("n1"), key("n2"), key("n3"));
+        addRow(root, key("n4"), key("n5"), key("n6"));
+        addRow(root, key("n7"), key("n8"), key("n9"));
+        addRow(root, key("n0"), key("recall"), key("sleep"));
+        addRow(root, key("volup"), key("ttx"), key("chup"));
+        addRow(root, key("voldown"), key("home"), key("chdown"));
+        addRow(root, key("display"), key("up"), key("source"));
+        addRow(root, key("left"), key("enter"), key("right"));
+        addRow(root, key("menu"), key("down"), key("exit"));
+        addRow(root, key("red"), key("green"), key("yellow"), key("blue"));
+        addRow(root, key("prev"), key("rew"), key("play"), key("ff"), key("next"), key("stop"));
+        addRow(root, key("mouse"), key("fav"), key("aspect"), key("browser"));
+        // touches propres à l'infrarouge : masquées tant qu'aucun code IR n'est enregistré
+        addRow(root, key("freeze"), key("pmode"), key("smode"), key("nicam"));
+        addRow(root, key("index"), key("hold"), key("cancel"), key("size"));
 
         // --- raccourcis d'applications
         shortcutBar = new LinearLayout(this);
         shortcutBar.setOrientation(LinearLayout.HORIZONTAL);
         HorizontalScrollView hs = new HorizontalScrollView(this);
         hs.setHorizontalScrollBarEnabled(false);
-        hs.addView(shortcutBar);
-        root.addView(hs);
-        root.addView(spacerView(dp(6)));
+        hs.addView(shortcutBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(hs, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         rebuildShortcuts();
 
         // --- outils
-        root.addView(spacerView(dp(10)));
         LinearLayout tools = new LinearLayout(this);
         tools.setOrientation(LinearLayout.HORIZONTAL);
         addTool(tools, "Applications", v -> showApps());
         addTool(tools, "Plus ⋯", v -> showMore());
-        root.addView(tools);
+        root.addView(tools, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+    }
+
+    private void addRow(LinearLayout root, View... views) {
+        root.addView(row(views), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
     }
 
     private void addTool(LinearLayout parent, String label, View.OnClickListener l) {
         Button t = textButton(label, l);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(44), 1f);
-        lp.setMargins(dp(3), 0, dp(3), 0);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        lp.setMargins(dp(3), dp(3), dp(3), dp(3));
         parent.addView(t, lp);
     }
 
@@ -319,8 +312,8 @@ public class MainActivity extends Activity {
         r.setOrientation(LinearLayout.HORIZONTAL);
         List<String> ids = new ArrayList<>();
         for (View v : views) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
-            lp.setMargins(dp(4), dp(4), dp(4), dp(4));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
             r.addView(v, lp);
             for (Map.Entry<String, Button> en : keyButtons.entrySet()) {
                 if (en.getValue() == v) ids.add(en.getKey());
@@ -722,14 +715,14 @@ public class MainActivity extends Activity {
                         .show();
                 return true;
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-            lp.setMargins(dp(3), 0, dp(3), 0);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
             shortcutBar.addView(b, lp);
         }
         Button add = textButton("＋ Raccourci", v -> showAddShortcut());
         add.setPadding(dp(16), 0, dp(16), 0);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        lp.setMargins(dp(3), 0, dp(3), 0);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        lp.setMargins(dp(3), dp(3), dp(3), dp(3));
         shortcutBar.addView(add, lp);
     }
 
