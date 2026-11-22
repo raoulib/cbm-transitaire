@@ -126,6 +126,16 @@ public class MainActivity extends Activity {
             mode = Mode.valueOf(prefs.getString("mode", "AUTO"));
         } catch (IllegalArgumentException ignored) { }
         padMode = Math.max(0, Math.min(2, prefs.getInt("padmode", 1)));
+        if (!prefs.getBoolean("mig_tivimate", false)) {
+            List<String> sc = loadShortcuts();
+            int at = sc.indexOf("blind:iptv");
+            if (at >= 0) {
+                if (sc.contains("blind:tivimate")) sc.remove(at);
+                else sc.set(at, "blind:tivimate");
+                saveShortcuts(sc);
+            }
+            prefs.edit().putBoolean("mig_tivimate", true).apply();
+        }
         sens = Math.max(0, Math.min(2, prefs.getInt("sens", 0)));
         buildUi();
         refreshStates();
@@ -655,7 +665,7 @@ public class MainActivity extends Activity {
                     + "pm list packages -3";
 
     private static final String[][] KEYWORDS = {
-            {"YouTube", "youtube"}, {"IPTV", "iptv"}, {"IPTV", "smarters"}, {"Chrome", "chrome"},
+            {"YouTube", "youtube"}, {"TiviMate", "tvplayer"}, {"IPTV", "iptv"}, {"IPTV", "smarters"}, {"Chrome", "chrome"},
             {"VLC", "vlc"}, {"Netflix", "netflix"}, {"Prime Video", "amazonvideo"},
             {"Disney+", "disney"}, {"Kodi", "kodi"}, {"Spotify", "spotify"}, {"Fichiers TV", "sendfiles"},
     };
@@ -664,7 +674,8 @@ public class MainActivity extends Activity {
     private static final String[][] BLIND = {
             {"youtube", "YouTube", "com.google.android.youtube.tv", "com.google.android.youtube",
                     "com.liskovsoft.smarttubetv", "com.liskovsoft.smarttubetv.beta"},
-            {"iptv", "IPTV", "com.nst.iptvsmarterstvbox", "com.nst.iptvsmarterspro"},
+            {"tivimate", "TiviMate", "ar.tvplayer.tv"},
+            {"iptv", "IPTV", "ar.tvplayer.tv", "com.nst.iptvsmarterstvbox", "com.nst.iptvsmarterspro"},
             {"chrome", "Chrome", "com.android.chrome"},
             {"vlc", "VLC", "org.videolan.vlc"},
             {"netflix", "Netflix", "com.netflix.ninja"},
@@ -806,7 +817,7 @@ public class MainActivity extends Activity {
         if (l.isEmpty()) {
             // liste indisponible : raccourcis par défaut, lancés « à l'aveugle »
             l.add("blind:youtube");
-            l.add("blind:iptv");
+            l.add("blind:tivimate");
             l.add("blind:chrome");
             l.add("blind:vlc");
         }
