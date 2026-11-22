@@ -248,6 +248,7 @@ public class MainActivity extends Activity {
         tools.setOrientation(LinearLayout.HORIZONTAL);
         addTool(tools, "Applications", v -> showApps());
         addTool(tools, "Codes IR", v -> showIrLab());
+        addTool(tools, "Diagnostic", v -> showDiagnostic());
         addTool(tools, "Aide", v -> showHelp());
         root.addView(tools);
     }
@@ -816,6 +817,85 @@ public class MainActivity extends Activity {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    // ------------------------------------------------------------------ diagnostic réseau
+
+    private static String portLabel(int p) {
+        switch (p) {
+            case 5555: return "ADB";
+            case 6466: return "AndroidTV-Remote";
+            case 6467: return "AndroidTV-Pairing";
+            case 8008: case 8009: return "Chromecast";
+            case 80: case 8080: return "Web";
+            default: return "";
+        }
+    }
+
+    private void showDiagnostic() {
+        final String base = localSubnetPrefix();
+        if (base == null) {
+            toast("Connectez le téléphone au WiFi de la TV.");
+            return;
+        }
+        final int[] ports = {80, 8080, 5555, 6466, 6467, 8008, 8009, 9000, 9080, 5000, 7000, 55000};
+        setStatus("Diagnostic réseau en cours (≈ 20 s)…", ORANGE);
+        new Thread(() -> {
+            final Map<Integer, List<Integer>> res = new HashMap<>();
+            ExecutorService pool = Executors.newFixedThreadPool(96);
+            for (int i = 1; i < 255; i++) {
+                for (int pt : ports) {
+                    final int host = i;
+                    final int port = pt;
+                    pool.execute(() -> {
+                        try (Socket s = new Socket()) {
+                            s.connect(new InetSocketAddress(base + host, port), 700);
+                            synchronized (res) {
+                                List<Integer> l = res.get(host);
+                                if (l == null) {
+                                    l = new ArrayList<>();
+                                    res.put(host, l);
+                                }
+                                l.add(port);
+                            }
+                        } catch (IOException ignored) { }
+                    });
+                }
+            }
+            pool.shutdown();
+            try {
+                pool.awaitTermination(60, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) { }
+            final StringBuilder sb = new StringBuilder("Réseau " + base + "0/24\n\n");
+            synchronized (res) {
+                List<Integer> hosts = new ArrayList<>(res.keySet());
+                Collections.sort(hosts);
+                for (int h : hosts) {
+                    List<Integer> l = res.get(h);
+                    Collections.sort(l);
+                    sb.append(base).append(h).append("\n");
+                    for (int pt : l) {
+                        String lab = portLabel(pt);
+                        sb.append("    port ").append(pt).append(lab.isEmpty() ? "" : "  (" + lab + ")").append("\n");
+                    }
+                }
+                if (hosts.isEmpty()) sb.append("Aucun port ouvert trouvé.\n");
+            }
+            onUi(() -> {
+                setStatus("Diagnostic terminé.", GREEN);
+                TextView tv = new TextView(this);
+                tv.setText(sb.toString());
+                tv.setTextIsSelectable(true);
+                tv.setPadding(dp(18), dp(8), dp(18), dp(8));
+                ScrollView sv = new ScrollView(this);
+                sv.addView(tv);
+                new AlertDialog.Builder(this)
+                        .setTitle("Appareils trouvés")
+                        .setView(sv)
+                        .setPositiveButton("Fermer", null)
+                        .show();
+            });
+        }).start();
     }
 
     // ------------------------------------------------------------------ aide
