@@ -996,7 +996,24 @@ public class MainActivity extends Activity {
      * Cherche les applis de la TV par plusieurs méthodes (délais longs : la TV est lente).
      * Le callback est toujours appelé (ensemble vide si rien) avec un texte de diagnostic.
      */
+    private boolean listingBusy = false;
+    private Set<String> listCache = null;
+    private String listCacheRaw = "";
+    private long listCacheTime = 0;
+
     private void listApps(final boolean silent, final AppsCb cb) {
+        if (listCache != null && System.currentTimeMillis() - listCacheTime < 5 * 60 * 1000L) {
+            final Set<String> cs = listCache;
+            final String cr = listCacheRaw;
+            ui.post(() -> cb.on(cs, cr));
+            return;
+        }
+        if (listingBusy) {
+            if (!silent) toast("Lecture de la liste des applications en cours…");
+            return;
+        }
+        listingBusy = true;
+        if (!silent) toast("Lecture de la liste des applications… (jusqu'à 30 s)");
         exec.execute(() -> {
             StringBuilder raw = new StringBuilder();
             Set<String> set = new LinkedHashSet<>();
@@ -1042,6 +1059,10 @@ public class MainActivity extends Activity {
                     setHeaderCollapsed(false);
                     refreshStates();
                 }
+                listingBusy = false;
+                listCache = fs;
+                listCacheRaw = fr;
+                listCacheTime = System.currentTimeMillis();
                 cb.on(fs, fr);
             });
         });
@@ -1096,7 +1117,7 @@ public class MainActivity extends Activity {
         Matcher m = Pattern.compile("\\d+").matcher(n);
         if (m.find()) {
             try {
-                return Math.max(1, Math.min(20, Integer.parseInt(m.group())));
+                return Math.max(1, Math.min(50, Integer.parseInt(m.group())));
             } catch (NumberFormatException ignored) { }
         }
         return def;
@@ -1127,22 +1148,58 @@ public class MainActivity extends Activity {
         return -1;
     }
 
-    /** Descend à 0 puis monte du niveau demandé : le résultat correspond au chiffre affiché par la TV. */
+    private int volKnown = -1;   // niveau de volume supposé (0-100), -1 = inconnu
+    private long volTime = 0;
+
+    private void adjustKnown(int delta) {
+        if (volKnown >= 0) {
+            volKnown = Math.max(0, Math.min(100, volKnown + delta));
+            volTime = System.currentTimeMillis();
+        }
+    }
+
+    /** Envoie `count` fois une touche par petits paquets (la TV est lente : un long envoi serait coupé). */
+    private void sendKeyBatch(int code, int count) {
+        final int chunk = 12;
+        while (count > 0) {
+            int c = Math.min(chunk, count);
+            StringBuilder sb = new StringBuilder("input keyevent");
+            for (int i = 0; i < c; i++) sb.append(' ').append(code);
+            adbRun(sb.toString(), null);
+            count -= c;
+        }
+    }
+
+    /**
+     * Règle le volume sur le chiffre affiché par la TV. Si le niveau actuel est connu (réglé récemment par
+     * cette app), on n'envoie que la différence ; sinon on redescend à 0 puis on monte.
+     */
     private void setVolumeLevel(int lvl) {
-        int target = Math.max(0, Math.min(100, lvl));
-        StringBuilder sb = new StringBuilder("input keyevent");
-        for (int i = 0; i < 100; i++) sb.append(" 25");
-        for (int i = 0; i < target; i++) sb.append(" 24");
-        adbRun(sb.toString(), null);
-        toast("Volume : " + target);
+        final int target = Math.max(0, Math.min(100, lvl));
+        boolean fresh = volKnown >= 0 && System.currentTimeMillis() - volTime < 10 * 60 * 1000L;
+        if (fresh) {
+            int delta = target - volKnown;
+            if (delta > 0) sendKeyBatch(24, delta);
+            else if (delta < 0) sendKeyBatch(25, -delta);
+            toast("Volume : " + volKnown + " → " + target);
+        } else {
+            sendKeyBatch(25, 100);
+            sendKeyBatch(24, target);
+            toast("Volume : remise à zéro puis " + target + " (quelques secondes)…");
+        }
+        volKnown = target;
+        volTime = System.currentTimeMillis();
     }
 
     private void keys(int code, int count) {
-        for (int i = 0; i < count; i++) sendAdbKey(code);
+        if (code == 24) adjustKnown(count);
+        else if (code == 25) adjustKnown(-count);
+        if (count > 8) sendKeyBatch(code, count);
+        else for (int i = 0; i < count; i++) sendAdbKey(code);
     }
 
     private void handleVoice(final String heard) {
-        final String n = norm(heard);
+        final String n = norm(heard.replaceAll("\\+", " plus ").replaceAll("-(?=\\d)", " moins "));
         toast("🎤 " + heard);
 
         if (has(n, "muet", "mute", "sourdine", "silence") || n.contains("coupe le son")) {
@@ -1478,6 +1535,8 @@ public class MainActivity extends Activity {
                 return;
             }
             sendAdbKey(k.adb);
+            if (k.id.equals("volup")) adjustKnown(1);
+            else if (k.id.equals("voldown")) adjustKnown(-1);
         }
     }
 
@@ -1596,6 +1655,7 @@ public class MainActivity extends Activity {
                 onUi(() -> {
                     setStatus("Connecté à " + ip + " (WiFi)", GREEN);
                     setHeaderCollapsed(true);
+                    listCache = null;
                     adbRun("wm size", this::parseScreenSize);
                     if (!prefs.getBoolean("sc_seeded2", false) && loadShortcuts().isEmpty()) {
                         listApps(true, (found, raw) -> seedShortcuts(found));
