@@ -86,6 +86,14 @@ public class MainActivity extends Activity {
     private TextView padView;
     private Button padModeButton;
     private LinearLayout shortcutBar;
+    private LinearLayout headerBox;
+    private TextView miniText;
+    private Button gearButton;
+    private Button sensButton;
+    private int sens = 0;
+    private final Object keyLock = new Object();
+    private final List<Integer> pendingKeys = new ArrayList<>();
+    private boolean drainScheduled = false;
     private boolean mouseOn = false;
     private boolean pointerMode = true;
     private int tvW = 1920, tvH = 1080;
@@ -111,6 +119,7 @@ public class MainActivity extends Activity {
             mode = Mode.valueOf(prefs.getString("mode", "AUTO"));
         } catch (IllegalArgumentException ignored) { }
         pointerMode = prefs.getBoolean("pointer", true);
+        sens = Math.max(0, Math.min(2, prefs.getInt("sens", 0)));
         buildUi();
         refreshStates();
         if (!prefs.getString("ip", "").isEmpty()) connectTv();
@@ -171,6 +180,24 @@ public class MainActivity extends Activity {
         frame.addView(mouseView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(frame);
 
+        // --- barre fine (toujours visible) + entête repliable
+        LinearLayout miniBar = new LinearLayout(this);
+        miniBar.setOrientation(LinearLayout.HORIZONTAL);
+        miniBar.setGravity(Gravity.CENTER_VERTICAL);
+        miniText = new TextView(this);
+        miniText.setTextSize(12);
+        miniText.setTextColor(Color.LTGRAY);
+        miniText.setSingleLine(true);
+        miniText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        miniBar.addView(miniText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        gearButton = textButton("▲ Masquer", v -> setHeaderCollapsed(headerBox.getVisibility() == View.VISIBLE));
+        gearButton.setPadding(dp(12), 0, dp(12), 0);
+        miniBar.addView(gearButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
+        root.addView(miniBar);
+        headerBox = new LinearLayout(this);
+        headerBox.setOrientation(LinearLayout.VERTICAL);
+        root.addView(headerBox);
+
         // --- connexion
         ipField = new EditText(this);
         ipField.setHint("IP de la TV (ex. 192.168.1.20)");
@@ -187,13 +214,13 @@ public class MainActivity extends Activity {
         conn.addView(ipField, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
         conn.addView(connect, new LinearLayout.LayoutParams(0, dp(44), 1f));
         conn.addView(find, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        root.addView(conn);
+        headerBox.addView(conn);
 
         status = new TextView(this);
         status.setTextColor(Color.LTGRAY);
         status.setTextSize(13);
         status.setPadding(dp(4), dp(4), dp(4), dp(8));
-        root.addView(status);
+        headerBox.addView(status);
 
         // --- mode
         LinearLayout modes = new LinearLayout(this);
@@ -210,8 +237,8 @@ public class MainActivity extends Activity {
             lp.setMargins(dp(3), 0, dp(3), 0);
             modes.addView(mb, lp);
         }
-        root.addView(modes);
-        root.addView(spacerView(dp(8)));
+        headerBox.addView(modes);
+        headerBox.addView(spacerView(dp(8)));
 
         // --- raccourcis d'applications
         shortcutBar = new LinearLayout(this);
@@ -388,11 +415,14 @@ public class MainActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(this);
-        title.setText("Souris");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(18);
-        bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        sensButton = textButton("", x -> {
+            sens = (sens + 1) % 3;
+            prefs.edit().putInt("sens", sens).apply();
+            updatePadHint();
+        });
+        LinearLayout.LayoutParams ls = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        ls.setMargins(0, 0, dp(8), 0);
+        bar.addView(sensButton, ls);
         padModeButton = textButton("", x -> {
             pointerMode = !pointerMode;
             prefs.edit().putBoolean("pointer", pointerMode).apply();
@@ -466,9 +496,16 @@ public class MainActivity extends Activity {
         parent.addView(b, lp);
     }
 
+    private int arrowStep() {
+        return sens == 0 ? dp(110) : sens == 1 ? dp(75) : dp(50);
+    }
+
     private void updatePadHint() {
+        String[] names = {"Faible", "Moyenne", "Haute"};
+        sensButton.setText("Sensibilité : " + names[sens]);
+        sensButton.setVisibility(pointerMode ? View.INVISIBLE : View.VISIBLE);
         padView.setText(pointerMode
-                ? "Cette zone représente l'écran de la TV\n\nToucher = clic\nGlisser = balayer / défiler\nMaintenir = appui long"
+                ? "Cette zone représente l'écran de la TV\n(aucun curseur n'est visible sur la TV)\n\nToucher = clic à cet endroit\nGlisser = balayer / défiler\nMaintenir = appui long"
                 : "Glisser = flèches\nToucher = OK\nDouble toucher = Retour");
         padModeButton.setText(pointerMode ? "Mode : Pointeur" : "Mode : Flèches");
     }
@@ -482,7 +519,6 @@ public class MainActivity extends Activity {
     }
 
     private void setupPad() {
-        final int step = dp(48);
         final int slop = ViewConfiguration.get(this).getScaledTouchSlop() * 2;
         final float[] acc = new float[2];
         final float[] st = new float[3]; // x, y, déplacé (0/1)
@@ -501,6 +537,7 @@ public class MainActivity extends Activity {
                 return true;
             }
             @Override public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
+                final int step = arrowStep();
                 acc[0] -= dx; acc[1] -= dy;
                 while (Math.abs(acc[0]) >= step) {
                     sendAdbKey(acc[0] > 0 ? 22 : 21);
@@ -576,26 +613,39 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ raccourcis d'applications
 
-    private static final String[][] KNOWN_APPS = {
-            {"YouTube", "com.google.android.youtube.tv", "com.google.android.youtube",
-                    "com.liskovsoft.smarttubetv", "com.liskovsoft.smarttubetv.beta"},
-            {"IPTV", "com.nst.iptvsmarterstvbox", "com.nst.iptvsmarterspro"},
-            {"Chrome", "com.android.chrome"},
-            {"VLC", "org.videolan.vlc"},
-            {"Netflix", "com.netflix.ninja"},
-            {"Prime Video", "com.amazon.amazonvideo.livingroom"},
-            {"Disney+", "com.disney.disneyplus"},
-            {"Kodi", "org.xbmc.kodi"},
-            {"Spotify", "com.spotify.tv.android"},
-            {"Fichiers TV", "com.yablio.sendfilestotv"},
+    /** Liste les applis lançables (TV et téléphone) + les applis installées par l'utilisateur. */
+    private static final String LIST_APPS_CMD =
+            "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER 2>/dev/null; "
+                    + "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LAUNCHER 2>/dev/null; "
+                    + "pm list packages -3";
+
+    private static final String[][] KEYWORDS = {
+            {"YouTube", "youtube"}, {"IPTV", "iptv"}, {"IPTV", "smarters"}, {"Chrome", "chrome"},
+            {"VLC", "vlc"}, {"Netflix", "netflix"}, {"Prime Video", "amazonvideo"},
+            {"Disney+", "disney"}, {"Kodi", "kodi"}, {"Spotify", "spotify"}, {"Fichiers TV", "sendfiles"},
     };
 
     private static String appLabel(String pkg) {
-        for (String[] g : KNOWN_APPS) {
-            for (int i = 1; i < g.length; i++) if (g[i].equals(pkg)) return g[0];
+        String low = pkg.toLowerCase(Locale.ROOT);
+        for (String[] k : KEYWORDS) {
+            if (low.contains(k[1])) return k[0];
         }
         String last = pkg.substring(pkg.lastIndexOf('.') + 1);
         return last.isEmpty() ? pkg : Character.toUpperCase(last.charAt(0)) + last.substring(1);
+    }
+
+    /** Accepte "package:xxx" et "xxx/activité" (sortie de pm query-activities). */
+    private static Set<String> parseLaunchable(String out) {
+        Set<String> set = new LinkedHashSet<>();
+        for (String raw : out.split("\\r?\\n")) {
+            String line = raw.trim();
+            if (line.startsWith("package:")) {
+                set.add(line.substring(8).trim());
+            } else if (line.indexOf('/') > 0 && line.indexOf(' ') < 0 && line.indexOf('.') > 0) {
+                set.add(line.substring(0, line.indexOf('/')));
+            }
+        }
+        return set;
     }
 
     private List<String> loadShortcuts() {
@@ -652,24 +702,28 @@ public class MainActivity extends Activity {
 
     /** Au premier branchement : propose YouTube, IPTV, Chrome, VLC... s'ils sont installés sur la TV. */
     private void seedShortcuts(String out) {
-        if (prefs.getBoolean("sc_seeded", false) || !loadShortcuts().isEmpty()) return;
-        Set<String> installed = new LinkedHashSet<>();
-        for (String line : out.split("\\r?\\n")) {
-            if (line.startsWith("package:")) installed.add(line.substring(8).trim());
-        }
+        if (prefs.getBoolean("sc_seeded2", false) || !loadShortcuts().isEmpty()) return;
+        Set<String> installed = parseLaunchable(out);
         if (installed.isEmpty()) return;
         List<String> l = new ArrayList<>();
-        for (String[] g : KNOWN_APPS) {
-            for (int i = 1; i < g.length; i++) {
-                if (installed.contains(g[i])) {
-                    l.add(g[i]);
+        for (String[] k : KEYWORDS) {
+            for (String pkg : installed) {
+                if (pkg.toLowerCase(Locale.ROOT).contains(k[1]) && !l.contains(pkg)
+                        && !labelTaken(l, k[0])) {
+                    l.add(pkg);
                     break;
                 }
             }
         }
+        if (l.isEmpty()) return;
         saveShortcuts(l);
-        prefs.edit().putBoolean("sc_seeded", true).apply();
+        prefs.edit().putBoolean("sc_seeded2", true).apply();
         rebuildShortcuts();
+    }
+
+    private static boolean labelTaken(List<String> l, String label) {
+        for (String p : l) if (appLabel(p).equals(label)) return true;
+        return false;
     }
 
     private void showAddShortcut() {
@@ -677,11 +731,8 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        adbRun("pm list packages -3; pm list packages -s | grep -E 'youtube|chrome|netflix|kodi|spotify|disney|amazon'", out -> {
-            Set<String> set = new LinkedHashSet<>();
-            for (String line : out.split("\\r?\\n")) {
-                if (line.startsWith("package:")) set.add(line.substring(8).trim());
-            }
+        adbRun(LIST_APPS_CMD, out -> {
+            Set<String> set = parseLaunchable(out);
             set.removeAll(loadShortcuts());
             final List<String> pkgs = new ArrayList<>(set);
             Collections.sort(pkgs);
@@ -712,9 +763,18 @@ public class MainActivity extends Activity {
                 }).show();
     }
 
+    private void setHeaderCollapsed(boolean c) {
+        headerBox.setVisibility(c ? View.GONE : View.VISIBLE);
+        gearButton.setText(c ? "⚙ Réglages" : "▲ Masquer");
+    }
+
     private void setStatus(String s, int color) {
         status.setText(s);
         status.setTextColor(color);
+        if (miniText != null) {
+            miniText.setText("● " + s);
+            miniText.setTextColor(color);
+        }
     }
 
     private void onUi(Runnable r) {
@@ -804,8 +864,57 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Les touches sont regroupées : si plusieurs appuis s'accumulent pendant qu'une commande
+     * s'exécute (la TV met ~0,3 s par commande), ils partent ensemble dans un seul "input keyevent a b c".
+     */
     private void sendAdbKey(int code) {
-        adbRun("input keyevent " + code, null);
+        synchronized (keyLock) {
+            if (pendingKeys.size() < 6) pendingKeys.add(code);
+            if (drainScheduled) return;
+            drainScheduled = true;
+        }
+        exec.execute(this::drainKeys);
+    }
+
+    private void drainKeys() {
+        while (true) {
+            StringBuilder cmd = new StringBuilder("input keyevent");
+            synchronized (keyLock) {
+                if (pendingKeys.isEmpty()) {
+                    drainScheduled = false;
+                    return;
+                }
+                for (int c : pendingKeys) cmd.append(' ').append(c);
+                pendingKeys.clear();
+            }
+            try {
+                shellWithReconnect(cmd.toString());
+            } catch (IOException e) {
+                synchronized (keyLock) {
+                    pendingKeys.clear();
+                    drainScheduled = false;
+                }
+                final String msg = e.getMessage();
+                onUi(() -> {
+                    setStatus("Connexion WiFi perdue : " + msg, RED);
+                    setHeaderCollapsed(false);
+                    refreshStates();
+                });
+                return;
+            }
+        }
+    }
+
+    private String shellWithReconnect(String cmd) throws IOException {
+        try {
+            return adb.shell(cmd);
+        } catch (IOException first) {
+            String ip = prefs.getString("ip", "");
+            if (ip.isEmpty()) throw first;
+            adb.connect(ip, ADB_PORT, null);
+            return adb.shell(cmd);
+        }
     }
 
     private void sendText(String t) {
@@ -821,15 +930,7 @@ public class MainActivity extends Activity {
     private void adbRun(String cmd, Result result) {
         exec.execute(() -> {
             try {
-                String out;
-                try {
-                    out = adb.shell(cmd);
-                } catch (IOException first) {
-                    String ip = prefs.getString("ip", "");
-                    if (ip.isEmpty()) throw first;
-                    adb.connect(ip, ADB_PORT, null);
-                    out = adb.shell(cmd);
-                }
+                String out = shellWithReconnect(cmd);
                 if (result != null) {
                     final String o = out;
                     onUi(() -> result.on(o));
@@ -837,6 +938,7 @@ public class MainActivity extends Activity {
             } catch (IOException e) {
                 onUi(() -> {
                     setStatus("Connexion WiFi perdue : " + e.getMessage(), RED);
+                    setHeaderCollapsed(false);
                     refreshStates();
                 });
             }
@@ -863,13 +965,17 @@ public class MainActivity extends Activity {
                         setStatus("Acceptez la demande sur l'écran de la TV (cochez « Toujours autoriser »)…", ORANGE)));
                 onUi(() -> {
                     setStatus("Connecté à " + ip + " (WiFi)", GREEN);
+                    setHeaderCollapsed(true);
                     adbRun("wm size", this::parseScreenSize);
-                    adbRun("pm list packages", this::seedShortcuts);
+                    if (!prefs.getBoolean("sc_seeded2", false) && loadShortcuts().isEmpty()) {
+                        adbRun(LIST_APPS_CMD, this::seedShortcuts);
+                    }
                     refreshStates();
                 });
             } catch (IOException e) {
                 onUi(() -> {
                     setStatus("Échec : " + e.getMessage() + ". Le débogage réseau est-il activé sur la TV ? (voir Aide)", RED);
+                    setHeaderCollapsed(false);
                     refreshStates();
                 });
             }
@@ -948,11 +1054,8 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        adbRun("pm list packages -3", out -> {
-            List<String> pkgs = new ArrayList<>();
-            for (String line : out.split("\\r?\\n")) {
-                if (line.startsWith("package:")) pkgs.add(line.substring(8).trim());
-            }
+        adbRun(LIST_APPS_CMD, out -> {
+            List<String> pkgs = new ArrayList<>(parseLaunchable(out));
             Collections.sort(pkgs);
             pkgs.add(0, "⚙ Paramètres Android");
             final String[] items = pkgs.toArray(new String[0]);
