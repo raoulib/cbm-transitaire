@@ -1420,14 +1420,218 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ------------------------------------------------------------------ apprentissage des touches (télécommande d'origine)
+
+    private boolean hasLearned(String id) {
+        return !prefs.getString("lin_" + id, "").isEmpty();
+    }
+
+    private static final class LearnResult {
+        String dev, raw, method, label;
+        int code = -1;
+        long scan = -1;
+        int[] nec; // {adresse basse, adresse haute, commande, interprétation}
+    }
+
+    /** Déduit une trame NEC (adresse, commande) du code brut lu sur la TV (plusieurs formats courants). */
+    private static int[] decodeNec(long v) {
+        int b0 = (int) (v & 0xff), b1 = (int) ((v >> 8) & 0xff), b2 = (int) ((v >> 16) & 0xff), b3 = (int) ((v >> 24) & 0xff);
+        if (v > 0xFFFFFFL) {
+            if ((b2 ^ b3) == 0xFF) return new int[]{b0, b1, b2, 0};  // octets dans l'ordre de réception
+            if ((b1 ^ b0) == 0xFF) return new int[]{b3, b2, b1, 1};  // ordre inversé (NEC32 du noyau Linux)
+            return null;
+        }
+        if (v > 0xFFFF) return new int[]{b2, b1, b0, 3};               // NEC étendu (adresse 16 bits << 8 | commande)
+        int a = b1;
+        return new int[]{a, (~a) & 0xff, b0, 2};                        // NEC court : adresse << 8 | commande
+    }
+
+    private String klLabel(int code) throws IOException {
+        String kl = queryTv("grep -H -E '^key " + code + " ' /system/usr/keylayout/*.kl /vendor/usr/keylayout/*.kl 2>/dev/null", 8000);
+        String label = null;
+        for (String line : kl.split("\\r?\\n")) {
+            Matcher km = Pattern.compile("^(\\S+):key\\s+" + code + "\\s+(\\S+)").matcher(line.trim());
+            if (km.find()) {
+                String lower = km.group(1).toLowerCase(Locale.ROOT);
+                if (label == null || lower.contains("remote") || lower.contains("ir") || lower.contains("mtk")) label = km.group(2);
+            }
+        }
+        return label;
+    }
+
+    private String describeLearn(LearnResult r) {
+        StringBuilder sb = new StringBuilder();
+        if (r.code < 0 && r.scan < 0) {
+            sb.append("Aucune touche reçue. Réessayez (« Lire », puis appuyez dans les 12 s).\n\nSortie brute :\n");
+            sb.append(r.raw == null || r.raw.trim().isEmpty() ? "(vide)" : r.raw.trim().substring(0, Math.min(300, r.raw.trim().length())));
+            return sb.toString();
+        }
+        if (r.code >= 0) sb.append("Touche Linux ").append(r.code).append(" (").append(r.dev).append(")\n");
+        sb.append(r.label != null ? "Touche Android : KEYCODE_" + r.label + "\n" : "Touche Android : inconnue\n");
+        if (r.scan >= 0) {
+            sb.append("Code brut : 0x").append(String.format(Locale.ROOT, "%X", r.scan)).append("\n");
+            if (r.nec != null) {
+                sb.append("→ NEC : adresse ").append(String.format(Locale.ROOT, "%02X %02X", r.nec[0], r.nec[1]))
+                        .append(", commande ").append(String.format(Locale.ROOT, "%02X", r.nec[2]))
+                        .append("  (format ").append(r.nec[3]).append(")\n");
+            } else {
+                sb.append("→ format NEC non reconnu\n");
+            }
+        } else {
+            sb.append("Pas de code infrarouge brut fourni par la TV (apprentissage WiFi seulement)\n");
+        }
+        return sb.toString();
+    }
+
+    private void showIrWizard() {
+        if (!wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        final String[] order = {"mute", "volup", "voldown", "chup", "chdown", "source", "menu", "home", "exit",
+                "up", "down", "left", "right", "enter", "n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9",
+                "red", "green", "yellow", "blue", "play", "rew", "ff", "prev", "next", "stop", "recall", "ttx",
+                "fav", "display", "aspect", "sleep", "browser", "freeze", "pmode", "smode", "nicam", "index",
+                "hold", "cancel", "size", "power"};
+        final int[] idx = {0};
+        final LearnResult[] last = {null};
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(8), dp(18), 0);
+        final TextView prompt = new TextView(this);
+        prompt.setTextSize(15);
+        box.addView(prompt);
+        final TextView result = new TextView(this);
+        result.setTextSize(13);
+        result.setPadding(0, dp(10), 0, dp(10));
+        result.setTextIsSelectable(true);
+        box.addView(result);
+
+        final Runnable showPrompt = () -> {
+            String id = order[idx[0]];
+            RKey k = RKey.ALL.get(id);
+            prompt.setText("Touche à apprendre : " + keyName(k) + "   (" + (idx[0] + 1) + "/" + order.length + ")\n"
+                    + "1) Touchez « Lire »\n2) Dans les 12 s, appuyez UNE FOIS sur cette touche de la télécommande d'origine, pointée vers la TV."
+                    + (id.equals("power") ? "\n⚠ La TV va passer en veille : rallumez-la avec la télécommande d'origine." : ""));
+            result.setText("");
+            last[0] = null;
+        };
+        showPrompt.run();
+
+        final AlertDialog[] dlg = new AlertDialog[1];
+        final Runnable advance = () -> {
+            idx[0]++;
+            if (idx[0] >= order.length) {
+                if (dlg[0] != null) dlg[0].dismiss();
+                toast("Apprentissage terminé.");
+                refreshStates();
+            } else {
+                showPrompt.run();
+            }
+        };
+
+        Button read = textButton("Lire", v -> {
+            result.setText("Appuyez maintenant sur la touche de la télécommande d'origine… (12 s)");
+            last[0] = null;
+            exec.execute(() -> {
+                LearnResult r = new LearnResult();
+                try {
+                    r.raw = queryTv("timeout 12 getevent -c 4 2>&1", 25000);
+                    Matcher m = Pattern.compile("(/dev/input/event\\d+):\\s+([0-9a-fA-F]{4})\\s+([0-9a-fA-F]{4})\\s+([0-9a-fA-F]{8})").matcher(r.raw);
+                    while (m.find()) {
+                        int type = Integer.parseInt(m.group(2), 16);
+                        int code = Integer.parseInt(m.group(3), 16);
+                        long val = Long.parseLong(m.group(4), 16);
+                        if (type == 1 && val == 1 && r.code < 0) {
+                            r.dev = m.group(1);
+                            r.code = code;
+                        } else if (type == 4 && code == 4 && r.scan < 0) {
+                            r.scan = val;
+                            if (r.dev == null) r.dev = m.group(1);
+                        }
+                    }
+                    if (r.scan >= 0) r.nec = decodeNec(r.scan);
+                    if (r.code >= 0) {
+                        r.label = klLabel(r.code);
+                        r.method = r.label != null ? "A:" + r.label : "B:" + r.dev + ":" + r.code;
+                    }
+                } catch (IOException e) {
+                    r.raw = "Erreur : " + e.getMessage();
+                }
+                onUi(() -> {
+                    last[0] = r;
+                    result.setText(describeLearn(r));
+                });
+            });
+        });
+        Button test = textButton("Tester IR", v -> {
+            LearnResult r = last[0];
+            if (r == null || r.nec == null) {
+                toast("Pas de code infrarouge à tester.");
+                return;
+            }
+            if (!ir.sendNec(r.nec[0], r.nec[1], r.nec[2])) toast("Émetteur IR indisponible.");
+        });
+        Button save = textButton("Enregistrer", v -> {
+            LearnResult r = last[0];
+            if (r == null || (r.code < 0 && r.nec == null)) {
+                toast("Rien à enregistrer : faites d'abord « Lire ».");
+                return;
+            }
+            String id = order[idx[0]];
+            SharedPreferences.Editor ed = prefs.edit();
+            if (r.method != null) ed.putString("lin_" + id, r.method);
+            if (r.nec != null) {
+                if (!prefs.getBoolean("ir_learned", false)) {
+                    ed.putInt("ir_lo", r.nec[0]).putInt("ir_hi", r.nec[1]).putBoolean("ir_learned", true);
+                } else if (r.nec[0] != prefs.getInt("ir_lo", -1) || r.nec[1] != prefs.getInt("ir_hi", -1)) {
+                    toast("Adresse IR différente des touches précédentes : la première est conservée.");
+                }
+                ed.putInt("ir_cmd_" + id, r.nec[2]);
+            }
+            ed.apply();
+            refreshStates();
+            advance.run();
+        });
+        Button skip = textButton("Passer", v -> advance.run());
+
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        for (Button b : new Button[]{read, test}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            row1.addView(b, lp);
+        }
+        for (Button b : new Button[]{save, skip}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(46), 1f);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            row2.addView(b, lp);
+        }
+        box.addView(row1);
+        box.addView(row2);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
+        dlg[0] = new AlertDialog.Builder(this)
+                .setTitle("Apprendre la télécommande d'origine")
+                .setView(sv)
+                .setPositiveButton("Terminer", null)
+                .create();
+        dlg[0].show();
+    }
+
     private void showMore() {
-        final String[] items = {"Curseur de la TV (touche MOUSE)", "Codes IR (infrarouge)", "Diagnostic réseau", "Test de la liaison ADB", "Aide"};
+        final String[] items = {"Curseur de la TV (touche MOUSE)", "Apprendre les touches (télécommande d'origine)", "Codes IR (balayage manuel)", "Diagnostic réseau", "Test de la liaison ADB", "Aide"};
         new AlertDialog.Builder(this)
                 .setItems(items, (d, w) -> {
                     if (w == 0) showMouseSetup();
-                    else if (w == 1) showIrLab();
-                    else if (w == 2) showDiagnostic();
-                    else if (w == 3) showAdbTest();
+                    else if (w == 1) showIrWizard();
+                    else if (w == 2) showIrLab();
+                    else if (w == 3) showDiagnostic();
+                    else if (w == 4) showAdbTest();
                     else showHelp();
                 }).show();
     }
@@ -1462,7 +1666,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean wifiRoute(RKey k) {
-        return mode != Mode.IR && wifiOk() && k.adb >= 0;
+        return mode != Mode.IR && wifiOk() && (k.adb >= 0 || hasLearned(k.id));
     }
 
     private boolean irRoute(RKey k) {
@@ -1479,7 +1683,7 @@ public class MainActivity extends Activity {
             applyAlpha(k);
             Button kb = keyButtons.get(k.id);
             if (kb != null) {
-                boolean usable = k.adb >= 0 || irCmd(k.id) >= 0 || k.id.equals("mouse");
+                boolean usable = k.adb >= 0 || irCmd(k.id) >= 0 || hasLearned(k.id) || k.id.equals("mouse");
                 kb.setVisibility(usable ? View.VISIBLE : View.GONE);
             }
         }
@@ -1527,6 +1731,11 @@ public class MainActivity extends Activity {
             ir.sendNec(prefs.getInt("ir_lo", 0x00), prefs.getInt("ir_hi", 0xFF), cmd);
         } else {
             if (k.adb < 0) {
+                String lm = prefs.getString("lin_" + k.id, "");
+                if (!lm.isEmpty() && wifi) {
+                    sendMouseMethod(lm); // touche apprise sur la télécommande d'origine
+                    return;
+                }
                 toast("Cette touche n'existe qu'en infrarouge.");
                 return;
             }
