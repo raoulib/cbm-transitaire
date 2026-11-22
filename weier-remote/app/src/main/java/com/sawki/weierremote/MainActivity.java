@@ -95,7 +95,7 @@ public class MainActivity extends Activity {
     private final List<Integer> pendingKeys = new ArrayList<>();
     private boolean drainScheduled = false;
     private boolean mouseOn = false;
-    private boolean pointerMode = true;
+    private int padMode = 1; // 0 pointeur, 1 flèches, 2 curseur TV
     private int tvW = 1920, tvH = 1080;
     private final Map<LinearLayout, List<String>> rowKeys = new HashMap<>();
     private final Runnable repeater = new Runnable() {
@@ -118,7 +118,7 @@ public class MainActivity extends Activity {
         try {
             mode = Mode.valueOf(prefs.getString("mode", "AUTO"));
         } catch (IllegalArgumentException ignored) { }
-        pointerMode = prefs.getBoolean("pointer", true);
+        padMode = Math.max(0, Math.min(2, prefs.getInt("padmode", 1)));
         sens = Math.max(0, Math.min(2, prefs.getInt("sens", 0)));
         buildUi();
         refreshStates();
@@ -424,8 +424,8 @@ public class MainActivity extends Activity {
         ls.setMargins(0, 0, dp(8), 0);
         bar.addView(sensButton, ls);
         padModeButton = textButton("", x -> {
-            pointerMode = !pointerMode;
-            prefs.edit().putBoolean("pointer", pointerMode).apply();
+            padMode = (padMode + 1) % 3;
+            prefs.edit().putInt("padmode", padMode).apply();
             updatePadHint();
         });
         LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(dp(140), dp(40));
@@ -433,6 +433,10 @@ public class MainActivity extends Activity {
         bar.addView(padModeButton, l1);
         bar.addView(textButton("Fermer ✕", x -> setMouse(false)), new LinearLayout.LayoutParams(dp(100), dp(40)));
         box.addView(bar);
+        Button cursorBtn = textButton("Curseur de la TV : activer / désactiver", x -> toggleTvCursor());
+        LinearLayout.LayoutParams lcb = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        lcb.setMargins(0, dp(8), 0, 0);
+        box.addView(cursorBtn, lcb);
 
         padView = new TextView(this);
         padView.setGravity(Gravity.CENTER);
@@ -497,17 +501,24 @@ public class MainActivity extends Activity {
     }
 
     private int arrowStep() {
+        if (padMode == 2) return sens == 0 ? dp(26) : sens == 1 ? dp(17) : dp(11);
         return sens == 0 ? dp(110) : sens == 1 ? dp(75) : dp(50);
     }
 
     private void updatePadHint() {
         String[] names = {"Faible", "Moyenne", "Haute"};
         sensButton.setText("Sensibilité : " + names[sens]);
-        sensButton.setVisibility(pointerMode ? View.INVISIBLE : View.VISIBLE);
-        padView.setText(pointerMode
-                ? "Cette zone représente l'écran de la TV\n(aucun curseur n'est visible sur la TV)\n\nToucher = clic à cet endroit\nGlisser = balayer / défiler\nMaintenir = appui long"
-                : "Glisser = flèches\nToucher = OK\nDouble toucher = Retour");
-        padModeButton.setText(pointerMode ? "Mode : Pointeur" : "Mode : Flèches");
+        sensButton.setVisibility(padMode == 0 ? View.INVISIBLE : View.VISIBLE);
+        if (padMode == 0) {
+            padView.setText("Cette zone représente l'écran de la TV\n(aucun curseur n'est visible sur la TV)\n\nToucher = clic à cet endroit\nGlisser = balayer / défiler\nMaintenir = appui long");
+            padModeButton.setText("Mode : Pointeur");
+        } else if (padMode == 1) {
+            padView.setText("Glisser = flèches (menus)\nToucher = OK\nDouble toucher = Retour");
+            padModeButton.setText("Mode : Flèches");
+        } else {
+            padView.setText("Pilote le curseur de la TV\n(activez-le avec le bouton ci-dessus)\n\nGlisser = déplacer le curseur\nToucher = clic");
+            padModeButton.setText("Mode : Curseur TV");
+        }
     }
 
     private int mapX(float x, int w) {
@@ -551,7 +562,7 @@ public class MainActivity extends Activity {
             }
         });
         padView.setOnTouchListener((v, e) -> {
-            if (!pointerMode) return gd.onTouchEvent(e);
+            if (padMode != 0) return gd.onTouchEvent(e);
             int action = e.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
                 st[0] = e.getX(); st[1] = e.getY(); st[2] = 0;
@@ -753,12 +764,134 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ------------------------------------------------------------------ curseur intégré de la TV
+
+    private void showMouseSetup() {
+        if (!wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Curseur de la TV")
+                .setMessage("Votre TV a un mode souris intégré (touche MOUSE de la télécommande d'origine). "
+                        + "L'app va apprendre cette touche.\n\n"
+                        + "1) Touchez « Démarrer ».\n"
+                        + "2) Dans les 15 secondes, appuyez UNE FOIS sur MOUSE avec la télécommande d'origine, pointée vers la TV.\n"
+                        + "3) L'app vous proposera de tester.")
+                .setPositiveButton("Démarrer", (d, w) -> captureMouseKey())
+                .setNegativeButton("Annuler", null)
+                .show();
+    }
+
+    private void captureMouseKey() {
+        toast("Appuyez sur MOUSE maintenant (15 s)…");
+        setStatus("Lecture de la télécommande d'origine… appuyez sur MOUSE.", ORANGE);
+        exec.execute(() -> {
+            try {
+                final String raw = adb.shell("timeout 15 getevent -c 12 2>&1", 30000);
+                // lignes : /dev/input/eventN: 0001 0074 00000001
+                Pattern pat = Pattern.compile("(/dev/input/event\\d+):\\s+([0-9a-fA-F]{4})\\s+([0-9a-fA-F]{4})\\s+([0-9a-fA-F]{8})");
+                String dev = null;
+                int code = -1;
+                Matcher m = pat.matcher(raw);
+                while (m.find()) {
+                    if (Integer.parseInt(m.group(2), 16) == 1 && Integer.parseInt(m.group(4), 16) == 1) {
+                        dev = m.group(1);
+                        code = Integer.parseInt(m.group(3), 16);
+                        break;
+                    }
+                }
+                if (dev == null) {
+                    final String shown = raw.trim().isEmpty() ? "(aucune sortie)" : raw.trim();
+                    onUi(() -> {
+                        setStatus("Aucune touche détectée.", RED);
+                        new AlertDialog.Builder(this)
+                                .setTitle("Aucune touche détectée")
+                                .setMessage("Rien reçu de la télécommande. Réessayez en appuyant sur MOUSE juste après « Démarrer ».\n\nSortie brute :\n"
+                                        + shown.substring(0, Math.min(500, shown.length())))
+                                .setPositiveButton("OK", null).show();
+                    });
+                    return;
+                }
+                final String fdev = dev;
+                final int fcode = code;
+                String kl = adb.shell("grep -H -E '^key " + fcode + " ' /system/usr/keylayout/*.kl /vendor/usr/keylayout/*.kl 2>/dev/null", 8000);
+                // choisit un libellé Android (préférence au fichier lié à la télécommande)
+                String label = null;
+                StringBuilder all = new StringBuilder();
+                for (String line : kl.split("\\r?\\n")) {
+                    Matcher km = Pattern.compile("^(\\S+):key\\s+" + fcode + "\\s+(\\S+)").matcher(line.trim());
+                    if (km.find()) {
+                        all.append(km.group(1).substring(km.group(1).lastIndexOf('/') + 1)).append(" → ").append(km.group(2)).append("\n");
+                        String lower = km.group(1).toLowerCase(Locale.ROOT);
+                        if (label == null || lower.contains("remote") || lower.contains("ir") || lower.contains("mtk")) label = km.group(2);
+                    }
+                }
+                final String flabel = label;
+                final String info = "Touche détectée : code " + fcode + " sur " + fdev + "\n"
+                        + (flabel == null ? "Touche Android : inconnue (mode brut seulement)" : "Touche Android : KEYCODE_" + flabel)
+                        + (all.length() > 0 ? "\n\nCorrespondances :\n" + all : "");
+                onUi(() -> {
+                    setStatus("Touche lue.", GREEN);
+                    AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle("Touche MOUSE lue").setMessage(info);
+                    if (flabel != null) {
+                        b.setPositiveButton("Tester (touche Android)", (d, w) -> testMouseMethod("A:" + flabel));
+                    }
+                    b.setNeutralButton("Tester (brut)", (d, w) -> testMouseMethod("B:" + fdev + ":" + fcode));
+                    b.setNegativeButton("Annuler", null);
+                    b.show();
+                });
+            } catch (IOException e) {
+                final String msg = e.getMessage();
+                onUi(() -> {
+                    setStatus("Lecture impossible : " + msg, RED);
+                    refreshStates();
+                });
+            }
+        });
+    }
+
+    private void sendMouseMethod(String m) {
+        if (m.startsWith("A:")) {
+            adbRun("input keyevent KEYCODE_" + m.substring(2), null);
+        } else if (m.startsWith("B:")) {
+            String[] p = m.split(":");
+            if (p.length < 3) return;
+            String d = p[1], c = p[2];
+            adbRun("sendevent " + d + " 1 " + c + " 1; sendevent " + d + " 0 0 0; "
+                    + "sendevent " + d + " 1 " + c + " 0; sendevent " + d + " 0 0 0", null);
+        }
+    }
+
+    private void testMouseMethod(final String method) {
+        sendMouseMethod(method);
+        ui.postDelayed(() -> new AlertDialog.Builder(this)
+                .setTitle("Test")
+                .setMessage("Le curseur est-il apparu (ou a-t-il disparu) sur la TV ?")
+                .setPositiveButton("Oui, enregistrer", (d, w) -> {
+                    prefs.edit().putString("tvcursor", method).apply();
+                    toast("Curseur TV enregistré.");
+                })
+                .setNegativeButton("Non", null)
+                .show(), 1200);
+    }
+
+    private void toggleTvCursor() {
+        String m = prefs.getString("tvcursor", "");
+        if (m.isEmpty()) {
+            showMouseSetup();
+            return;
+        }
+        sendMouseMethod(m);
+    }
+
     private void showMore() {
-        final String[] items = {"Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
+        final String[] items = {"Curseur de la TV (touche MOUSE)", "Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
         new AlertDialog.Builder(this)
                 .setItems(items, (d, w) -> {
-                    if (w == 0) showIrLab();
-                    else if (w == 1) showDiagnostic();
+                    if (w == 0) showMouseSetup();
+                    else if (w == 1) showIrLab();
+                    else if (w == 2) showDiagnostic();
                     else showHelp();
                 }).show();
     }
@@ -870,7 +1003,7 @@ public class MainActivity extends Activity {
      */
     private void sendAdbKey(int code) {
         synchronized (keyLock) {
-            if (pendingKeys.size() < 6) pendingKeys.add(code);
+            if (pendingKeys.size() < 12) pendingKeys.add(code);
             if (drainScheduled) return;
             drainScheduled = true;
         }
@@ -1338,6 +1471,7 @@ public class MainActivity extends Activity {
                 + "MODES\n"
                 + "Auto : WiFi si connecté, sinon infrarouge (Power utilise l'IR si son code est enregistré).\n"
                 + "RACCOURCIS : rangée sous les modes ; « ＋ Raccourci » pour ajouter une appli de la TV, appui long pour en retirer.\n"
+                + "CURSEUR TV : menu Plus ⋯ → « Curseur de la TV » pour apprendre la touche MOUSE de la télécommande d'origine.\n"
                 + "MOUSE : ouvre le mode souris (zone tactile + clavier) ; « Fermer » ou Retour revient à la télécommande.\n"
                 + "Touches grisées : indisponibles dans le mode actuel (pas de connexion, ou code IR inconnu).";
         new AlertDialog.Builder(this)

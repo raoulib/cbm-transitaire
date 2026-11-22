@@ -103,6 +103,20 @@ public class AdbClient implements Closeable {
         }
     }
 
+    /** Comme shell(), avec un délai de lecture plus long (commandes lentes). */
+    public synchronized String shell(String command, int timeoutMs) throws IOException {
+        if (!isConnected()) throw new IOException("Non connecté");
+        int old = socket.getSoTimeout();
+        socket.setSoTimeout(timeoutMs);
+        try {
+            return shell(command);
+        } finally {
+            try {
+                if (socket != null && !socket.isClosed()) socket.setSoTimeout(old);
+            } catch (IOException ignored) { }
+        }
+    }
+
     /** Exécute une commande shell et renvoie sa sortie. */
     public synchronized String shell(String command) throws IOException {
         if (!isConnected()) throw new IOException("Non connecté");
