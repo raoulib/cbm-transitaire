@@ -48,7 +48,8 @@ jobs:
         run: |
           mkdir -p weier-remote/dist
           cp weier-remote/app/build/outputs/apk/debug/app-debug.apk weier-remote/dist/WeierRemote.apk
+          cp weier-remote/tvhome/build/outputs/apk/debug/tvhome-debug.apk weier-remote/dist/WeierHome.apk
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add weier-remote/dist/WeierRemote.apk
-          git diff --cached --quiet || (git commit -m "Update WeierRemote.apk [skip ci]" && git push origin HEAD:${{ github.ref_name }})
+          git add weier-remote/dist/WeierRemote.apk weier-remote/dist/WeierHome.apk
+          git diff --cached --quiet || (git commit -m "Update APKs [skip ci]" && git push origin HEAD:${{ github.ref_name }})
