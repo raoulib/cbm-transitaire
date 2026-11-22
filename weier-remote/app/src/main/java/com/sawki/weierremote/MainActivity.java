@@ -27,6 +27,9 @@ import android.widget.ToggleButton;
 import android.view.GestureDetector;
 import android.widget.AdapterView;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import android.content.Context;
 import android.view.ViewConfiguration;
 import android.view.inputmethod.InputMethodManager;
@@ -82,6 +85,7 @@ public class MainActivity extends Activity {
     private View remoteView, mouseView;
     private TextView padView;
     private Button padModeButton;
+    private LinearLayout shortcutBar;
     private boolean mouseOn = false;
     private boolean pointerMode = true;
     private int tvW = 1920, tvH = 1080;
@@ -208,6 +212,16 @@ public class MainActivity extends Activity {
         }
         root.addView(modes);
         root.addView(spacerView(dp(8)));
+
+        // --- raccourcis d'applications
+        shortcutBar = new LinearLayout(this);
+        shortcutBar.setOrientation(LinearLayout.HORIZONTAL);
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        hs.addView(shortcutBar);
+        root.addView(hs);
+        root.addView(spacerView(dp(6)));
+        rebuildShortcuts();
 
         // --- télécommande (même disposition que l'originale)
         root.addView(row(key("power"), spacer(), spacer(), key("mute")));
@@ -560,6 +574,134 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------------ raccourcis d'applications
+
+    private static final String[][] KNOWN_APPS = {
+            {"YouTube", "com.google.android.youtube.tv", "com.google.android.youtube",
+                    "com.liskovsoft.smarttubetv", "com.liskovsoft.smarttubetv.beta"},
+            {"IPTV", "com.nst.iptvsmarterstvbox", "com.nst.iptvsmarterspro"},
+            {"Chrome", "com.android.chrome"},
+            {"VLC", "org.videolan.vlc"},
+            {"Netflix", "com.netflix.ninja"},
+            {"Prime Video", "com.amazon.amazonvideo.livingroom"},
+            {"Disney+", "com.disney.disneyplus"},
+            {"Kodi", "org.xbmc.kodi"},
+            {"Spotify", "com.spotify.tv.android"},
+            {"Fichiers TV", "com.yablio.sendfilestotv"},
+    };
+
+    private static String appLabel(String pkg) {
+        for (String[] g : KNOWN_APPS) {
+            for (int i = 1; i < g.length; i++) if (g[i].equals(pkg)) return g[0];
+        }
+        String last = pkg.substring(pkg.lastIndexOf('.') + 1);
+        return last.isEmpty() ? pkg : Character.toUpperCase(last.charAt(0)) + last.substring(1);
+    }
+
+    private List<String> loadShortcuts() {
+        List<String> l = new ArrayList<>();
+        for (String x : prefs.getString("shortcuts", "").split("\\n")) {
+            if (!x.trim().isEmpty()) l.add(x.trim());
+        }
+        return l;
+    }
+
+    private void saveShortcuts(List<String> l) {
+        StringBuilder sb = new StringBuilder();
+        for (String x : l) sb.append(x).append('\n');
+        prefs.edit().putString("shortcuts", sb.toString()).apply();
+    }
+
+    private void rebuildShortcuts() {
+        shortcutBar.removeAllViews();
+        for (final String pkg : loadShortcuts()) {
+            Button b = textButton(appLabel(pkg), v -> launchApp(pkg));
+            b.setPadding(dp(16), 0, dp(16), 0);
+            b.setOnLongClickListener(v -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("Retirer « " + appLabel(pkg) + " » ?")
+                        .setPositiveButton("Retirer", (d, w) -> {
+                            List<String> l = loadShortcuts();
+                            l.remove(pkg);
+                            saveShortcuts(l);
+                            rebuildShortcuts();
+                        })
+                        .setNegativeButton("Annuler", null)
+                        .show();
+                return true;
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+            lp.setMargins(dp(3), 0, dp(3), 0);
+            shortcutBar.addView(b, lp);
+        }
+        Button add = textButton("＋ Raccourci", v -> showAddShortcut());
+        add.setPadding(dp(16), 0, dp(16), 0);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        lp.setMargins(dp(3), 0, dp(3), 0);
+        shortcutBar.addView(add, lp);
+    }
+
+    private void launchApp(String pkg) {
+        if (!wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        adbRun("monkey -p " + pkg + " -c android.intent.category.LEANBACK_LAUNCHER 1; "
+                + "monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1", null);
+    }
+
+    /** Au premier branchement : propose YouTube, IPTV, Chrome, VLC... s'ils sont installés sur la TV. */
+    private void seedShortcuts(String out) {
+        if (prefs.getBoolean("sc_seeded", false) || !loadShortcuts().isEmpty()) return;
+        Set<String> installed = new LinkedHashSet<>();
+        for (String line : out.split("\\r?\\n")) {
+            if (line.startsWith("package:")) installed.add(line.substring(8).trim());
+        }
+        if (installed.isEmpty()) return;
+        List<String> l = new ArrayList<>();
+        for (String[] g : KNOWN_APPS) {
+            for (int i = 1; i < g.length; i++) {
+                if (installed.contains(g[i])) {
+                    l.add(g[i]);
+                    break;
+                }
+            }
+        }
+        saveShortcuts(l);
+        prefs.edit().putBoolean("sc_seeded", true).apply();
+        rebuildShortcuts();
+    }
+
+    private void showAddShortcut() {
+        if (!wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        adbRun("pm list packages -3; pm list packages -s | grep -E 'youtube|chrome|netflix|kodi|spotify|disney|amazon'", out -> {
+            Set<String> set = new LinkedHashSet<>();
+            for (String line : out.split("\\r?\\n")) {
+                if (line.startsWith("package:")) set.add(line.substring(8).trim());
+            }
+            set.removeAll(loadShortcuts());
+            final List<String> pkgs = new ArrayList<>(set);
+            Collections.sort(pkgs);
+            if (pkgs.isEmpty()) {
+                toast("Aucune application à ajouter.");
+                return;
+            }
+            final String[] items = new String[pkgs.size()];
+            for (int i = 0; i < items.length; i++) items[i] = appLabel(pkgs.get(i)) + "  (" + pkgs.get(i) + ")";
+            new AlertDialog.Builder(this)
+                    .setTitle("Ajouter un raccourci")
+                    .setItems(items, (d, w) -> {
+                        List<String> l = loadShortcuts();
+                        l.add(pkgs.get(w));
+                        saveShortcuts(l);
+                        rebuildShortcuts();
+                    }).show();
+        });
+    }
+
     private void showMore() {
         final String[] items = {"Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
         new AlertDialog.Builder(this)
@@ -722,6 +864,7 @@ public class MainActivity extends Activity {
                 onUi(() -> {
                     setStatus("Connecté à " + ip + " (WiFi)", GREEN);
                     adbRun("wm size", this::parseScreenSize);
+                    adbRun("pm list packages", this::seedShortcuts);
                     refreshStates();
                 });
             } catch (IOException e) {
@@ -819,9 +962,7 @@ public class MainActivity extends Activity {
                         if (w == 0) {
                             adbRun("am start -a android.settings.SETTINGS", null);
                         } else {
-                            String p = items[w];
-                            adbRun("monkey -p " + p + " -c android.intent.category.LEANBACK_LAUNCHER 1; "
-                                    + "monkey -p " + p + " -c android.intent.category.LAUNCHER 1", null);
+                            launchApp(items[w]);
                         }
                     }).show();
         });
@@ -1093,6 +1234,7 @@ public class MainActivity extends Activity {
                 + "Le téléphone doit avoir un émetteur IR et être pointé vers la TV.\n\n"
                 + "MODES\n"
                 + "Auto : WiFi si connecté, sinon infrarouge (Power utilise l'IR si son code est enregistré).\n"
+                + "RACCOURCIS : rangée sous les modes ; « ＋ Raccourci » pour ajouter une appli de la TV, appui long pour en retirer.\n"
                 + "MOUSE : ouvre le mode souris (zone tactile + clavier) ; « Fermer » ou Retour revient à la télécommande.\n"
                 + "Touches grisées : indisponibles dans le mode actuel (pas de connexion, ou code IR inconnu).";
         new AlertDialog.Builder(this)
