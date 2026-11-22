@@ -122,11 +122,15 @@ public class AdbClient implements Closeable {
 
     /** Comme shell(), avec un délai de lecture plus long (commandes lentes). */
     public synchronized String shell(String command, int timeoutMs) throws IOException {
+        return timed("shell:", command, timeoutMs);
+    }
+
+    private synchronized String timed(String prefix, String command, int timeoutMs) throws IOException {
         if (!isConnected()) throw new IOException("Non connecté");
         int old = socket.getSoTimeout();
         socket.setSoTimeout(timeoutMs);
         try {
-            return shell(command);
+            return service(prefix, command);
         } finally {
             try {
                 if (socket != null && !socket.isClosed()) socket.setSoTimeout(old);
@@ -136,10 +140,19 @@ public class AdbClient implements Closeable {
 
     /** Exécute une commande shell et renvoie sa sortie. */
     public synchronized String shell(String command) throws IOException {
+        return service("shell:", command);
+    }
+
+    /** Service "exec:" (sans terminal) : sortie brute, fiable même avec les noyaux anciens. */
+    public synchronized String exec(String command, int timeoutMs) throws IOException {
+        return timed("exec:", command, timeoutMs);
+    }
+
+    private synchronized String service(String prefix, String command) throws IOException {
         if (!isConnected()) throw new IOException("Non connecté");
         try {
             int local = nextLocalId++;
-            send(A_OPEN, local, 0, ("shell:" + command + "\0").getBytes(StandardCharsets.UTF_8));
+            send(A_OPEN, local, 0, (prefix + command + "\0").getBytes(StandardCharsets.UTF_8));
             ByteArrayOutputStream result = new ByteArrayOutputStream();
             while (true) {
                 Message m = read();

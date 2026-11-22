@@ -890,7 +890,7 @@ public class MainActivity extends Activity {
         setStatus("Lecture de la télécommande d'origine… appuyez sur MOUSE.", ORANGE);
         exec.execute(() -> {
             try {
-                final String raw = adb.shell("timeout 15 getevent -c 12 2>&1", 30000);
+                final String raw = queryTv("timeout 15 getevent -c 12 2>&1", 30000);
                 // lignes : /dev/input/eventN: 0001 0074 00000001
                 Pattern pat = Pattern.compile("(/dev/input/event\\d+):\\s+([0-9a-fA-F]{4})\\s+([0-9a-fA-F]{4})\\s+([0-9a-fA-F]{8})");
                 String dev = null;
@@ -917,7 +917,7 @@ public class MainActivity extends Activity {
                 }
                 final String fdev = dev;
                 final int fcode = code;
-                String kl = adb.shell("grep -H -E '^key " + fcode + " ' /system/usr/keylayout/*.kl /vendor/usr/keylayout/*.kl 2>/dev/null", 8000);
+                String kl = queryTv("grep -H -E '^key " + fcode + " ' /system/usr/keylayout/*.kl /vendor/usr/keylayout/*.kl 2>/dev/null", 8000);
                 // choisit un libellé Android (préférence au fichier lié à la télécommande)
                 String label = null;
                 StringBuilder all = new StringBuilder();
@@ -1010,7 +1010,7 @@ public class MainActivity extends Activity {
                         "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LAUNCHER 2>&1",
                 };
                 for (String c : first) {
-                    String out = adb.shell(c, 30000);
+                    String out = queryTv(c, 30000);
                     raw.append("$ ").append(c, 0, Math.min(34, c.length())).append("\n").append(out.trim()).append("\n");
                     set.addAll(parseLaunchable(out));
                 }
@@ -1021,7 +1021,7 @@ public class MainActivity extends Activity {
                             "dumpsys package packages 2>&1 | grep -E '^ +Package \\['",
                     };
                     for (String c : more) {
-                        String out = adb.shell(c, 30000);
+                        String out = queryTv(c, 30000);
                         raw.append("$ ").append(c, 0, Math.min(34, c.length())).append("\n").append(out.trim()).append("\n");
                         for (String pkg : parseLaunchable(out)) if (!isNoise(pkg)) set.add(pkg);
                         if (!set.isEmpty()) break;
@@ -1110,6 +1110,34 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    /** Niveau demandé (0-100) : chiffres, quelques nombres en lettres, « maximum », « minimum ». */
+    private static int levelNumber(String n) {
+        if (has(n, "maximum", "max", "fond")) return 100;
+        if (has(n, "minimum", "min", "zero")) return 0;
+        Matcher m = Pattern.compile("\\d+").matcher(n);
+        if (m.find()) {
+            try {
+                return Math.min(100, Integer.parseInt(m.group()));
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+        }
+        String[][] words = {{"dix", "10"}, {"quinze", "15"}, {"vingt", "20"}, {"trente", "30"},
+                {"quarante", "40"}, {"cinquante", "50"}, {"soixante", "60"}, {"cent", "100"}};
+        for (String[] w : words) if (has(n, w[0])) return Integer.parseInt(w[1]);
+        return -1;
+    }
+
+    /** Descend à 0 puis monte du niveau demandé : le résultat correspond au chiffre affiché par la TV. */
+    private void setVolumeLevel(int lvl) {
+        int target = Math.max(0, Math.min(100, lvl));
+        StringBuilder sb = new StringBuilder("input keyevent");
+        for (int i = 0; i < 100; i++) sb.append(" 25");
+        for (int i = 0; i < target; i++) sb.append(" 24");
+        adbRun(sb.toString(), null);
+        toast("Volume : " + target);
+    }
+
     private void keys(int code, int count) {
         for (int i = 0; i < count; i++) sendAdbKey(code);
     }
@@ -1123,9 +1151,11 @@ public class MainActivity extends Activity {
         } else if (has(n, "volume", "son") || n.contains("plus fort") || n.contains("moins fort")) {
             boolean down = has(n, "moins", "baisse", "baisser", "diminue", "diminuer", "bas", "doucement");
             boolean up = has(n, "plus", "monte", "monter", "augmente", "augmenter", "fort", "haut");
+            int lvl = levelNumber(n);
             if (down) keys(25, firstNumber(n, 3));
             else if (up) keys(24, firstNumber(n, 3));
-            else toast("Volume : dites « plus » ou « moins ».");
+            else if (lvl >= 0) setVolumeLevel(lvl);
+            else toast("Volume : dites un niveau (« volume 20 ») ou « plus » / « moins ».");
         } else if (has(n, "chaine", "chaines")) {
             Matcher m = Pattern.compile("\\d+").matcher(n);
             if (m.find()) {
@@ -1318,7 +1348,7 @@ public class MainActivity extends Activity {
             String out;
             adb.trace = new StringBuilder();
             try {
-                out = adb.shell("echo TEST_OK; id; getprop ro.build.version.release; pm list packages | head -3", 20000);
+                out = queryTv("echo TEST_OK; id; getprop ro.build.version.release; pm list packages | head -3", 20000);
             } catch (IOException e) {
                 out = "Erreur : " + e.getMessage();
             }
@@ -1495,13 +1525,24 @@ public class MainActivity extends Activity {
     }
 
     private String shellWithReconnect(String cmd) throws IOException {
+        return shellWithReconnect(cmd, false);
+    }
+
+    /** Commande qui renvoie du texte : canal exec: d'abord, puis shell: + pause si la réponse est vide. */
+    private String queryTv(String cmd, int timeoutMs) throws IOException {
+        String out = adb.exec(cmd, timeoutMs);
+        if (out.trim().isEmpty()) out = adb.shell(cmd + "; sleep 1", timeoutMs);
+        return out;
+    }
+
+    private String shellWithReconnect(String cmd, boolean wantOutput) throws IOException {
         try {
-            return adb.shell(cmd);
+            return wantOutput ? queryTv(cmd, 30000) : adb.shell(cmd);
         } catch (IOException first) {
             String ip = prefs.getString("ip", "");
             if (ip.isEmpty()) throw first;
             adb.connect(ip, ADB_PORT, null);
-            return adb.shell(cmd);
+            return wantOutput ? queryTv(cmd, 30000) : adb.shell(cmd);
         }
     }
 
@@ -1520,7 +1561,7 @@ public class MainActivity extends Activity {
     private void adbRun(String cmd, Result result) {
         exec.execute(() -> {
             try {
-                String out = shellWithReconnect(cmd);
+                String out = shellWithReconnect(cmd, result != null);
                 if (result != null) {
                     final String o = out;
                     onUi(() -> result.on(o));

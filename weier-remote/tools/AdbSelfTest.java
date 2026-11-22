@@ -32,6 +32,8 @@ public class AdbSelfTest {
         check("input keyevent 24".equals(lastShell), "commande reçue = " + lastShell);
         String out2 = c.shell("echo second");
         check("ok:echo second".equals(out2), "2e commande = " + out2);
+        String out3 = c.exec("echo third", 5000);
+        check("ok:echo third".equals(out3), "exec: = " + out3);
         c.close();
         srv.join(3000);
         if (failure != null) { System.out.println("ECHEC : " + failure); System.exit(1); }
@@ -75,12 +77,13 @@ public class AdbSelfTest {
         // Variante de référence : SHA1withRSA ne s'applique pas ici (le token est déjà le hash) -> on vérifie aussi la longueur
         check(sig.length == 256, "signature = 256 octets");
         wr(out, CNXN, 0x01000000, 4096, "device::\0".getBytes());
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < 3; i++) {
             d = rd(in, h);
             check(h[0] == OPEN, "serveur: reçoit OPEN");
             String cmd = new String(d, 0, d.length - 1, StandardCharsets.UTF_8);
-            check(cmd.startsWith("shell:"), "service shell");
-            lastShell = cmd.substring(6);
+            boolean isShell = cmd.startsWith("shell:");
+            check(isShell || cmd.startsWith("exec:"), "service shell/exec");
+            lastShell = cmd.substring(isShell ? 6 : 5);
             int local = h[1], remote = 100 + i;
             wr(out, OKAY, remote, local, null);
             wr(out, WRTE, remote, local, ("ok:" + lastShell).getBytes());
