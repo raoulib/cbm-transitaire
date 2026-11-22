@@ -27,6 +27,10 @@ import android.widget.ToggleButton;
 import android.view.GestureDetector;
 import android.widget.AdapterView;
 import android.widget.FrameLayout;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.speech.RecognizerIntent;
+import java.text.Normalizer;
 import android.widget.HorizontalScrollView;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -89,6 +93,7 @@ public class MainActivity extends Activity {
     private LinearLayout headerBox;
     private TextView miniText;
     private Button gearButton;
+    private static final int REQ_VOICE = 41, REQ_DICT = 42;
     private Button sensButton;
     private int sens = 0;
     private final Object keyLock = new Object();
@@ -169,7 +174,7 @@ public class MainActivity extends Activity {
         scroll.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(10), dp(14), dp(10), dp(24));
+        root.setPadding(dp(10), dp(6), dp(10), dp(24));
         scroll.addView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         remoteView = scroll;
         mouseView = buildMouseView();
@@ -180,20 +185,10 @@ public class MainActivity extends Activity {
         frame.addView(mouseView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(frame);
 
-        // --- barre fine (toujours visible) + entête repliable
-        LinearLayout miniBar = new LinearLayout(this);
-        miniBar.setOrientation(LinearLayout.HORIZONTAL);
-        miniBar.setGravity(Gravity.CENTER_VERTICAL);
-        miniText = new TextView(this);
-        miniText.setTextSize(12);
-        miniText.setTextColor(Color.LTGRAY);
-        miniText.setSingleLine(true);
-        miniText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        miniBar.addView(miniText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        gearButton = textButton("▲ Masquer", v -> setHeaderCollapsed(headerBox.getVisibility() == View.VISIBLE));
-        gearButton.setPadding(dp(12), 0, dp(12), 0);
-        miniBar.addView(gearButton, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
-        root.addView(miniBar);
+        // --- entête repliable (réglages) : ouvert par le bouton ⚙ de la ligne Power
+        gearButton = textButton("⚙", v -> setHeaderCollapsed(headerBox.getVisibility() == View.VISIBLE));
+        gearButton.setTextSize(18);
+        miniText = null;
         headerBox = new LinearLayout(this);
         headerBox.setOrientation(LinearLayout.VERTICAL);
         root.addView(headerBox);
@@ -240,18 +235,11 @@ public class MainActivity extends Activity {
         headerBox.addView(modes);
         headerBox.addView(spacerView(dp(8)));
 
-        // --- raccourcis d'applications
-        shortcutBar = new LinearLayout(this);
-        shortcutBar.setOrientation(LinearLayout.HORIZONTAL);
-        HorizontalScrollView hs = new HorizontalScrollView(this);
-        hs.setHorizontalScrollBarEnabled(false);
-        hs.addView(shortcutBar);
-        root.addView(hs);
-        root.addView(spacerView(dp(6)));
-        rebuildShortcuts();
 
         // --- télécommande (même disposition que l'originale)
-        root.addView(row(key("power"), spacer(), spacer(), key("mute")));
+        Button micBtn = textButton("🎤", v -> startVoice(false));
+        micBtn.setTextSize(18);
+        root.addView(row(key("power"), gearButton, micBtn, key("mute")));
         root.addView(row(key("n1"), key("n2"), key("n3")));
         root.addView(row(key("n4"), key("n5"), key("n6")));
         root.addView(row(key("n7"), key("n8"), key("n9")));
@@ -274,6 +262,16 @@ public class MainActivity extends Activity {
         root.addView(row(key("prev"), key("stop"), key("next")));
         root.addView(row(key("mouse"), key("browser"), key("index")));
         root.addView(row(key("hold"), key("cancel"), key("size")));
+
+        // --- raccourcis d'applications
+        shortcutBar = new LinearLayout(this);
+        shortcutBar.setOrientation(LinearLayout.HORIZONTAL);
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        hs.addView(shortcutBar);
+        root.addView(hs);
+        root.addView(spacerView(dp(6)));
+        rebuildShortcuts();
 
         // --- outils
         root.addView(spacerView(dp(10)));
@@ -484,6 +482,7 @@ public class MainActivity extends Activity {
         kb.setOrientation(LinearLayout.HORIZONTAL);
         kb.setGravity(Gravity.CENTER_VERTICAL);
         kb.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 3f));
+        kb.addView(textButton("🎤", x -> startVoice(true)), new LinearLayout.LayoutParams(0, dp(44), 1f));
         kb.addView(textButton("Envoyer", x -> sendIt.run()), new LinearLayout.LayoutParams(0, dp(44), 2f));
         kb.addView(textButton("⌫", x -> sendAdbKey(67)), new LinearLayout.LayoutParams(0, dp(44), 1f));
         kb.addView(textButton("↵", x -> sendAdbKey(66)), new LinearLayout.LayoutParams(0, dp(44), 1f));
@@ -712,9 +711,8 @@ public class MainActivity extends Activity {
     }
 
     /** Au premier branchement : propose YouTube, IPTV, Chrome, VLC... s'ils sont installés sur la TV. */
-    private void seedShortcuts(String out) {
+    private void seedShortcuts(Set<String> installed) {
         if (prefs.getBoolean("sc_seeded2", false) || !loadShortcuts().isEmpty()) return;
-        Set<String> installed = parseLaunchable(out);
         if (installed.isEmpty()) return;
         List<String> l = new ArrayList<>();
         for (String[] k : KEYWORDS) {
@@ -742,8 +740,8 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        adbRun(LIST_APPS_CMD, out -> {
-            Set<String> set = parseLaunchable(out);
+        listApps(false, (found, raw) -> {
+            Set<String> set = new LinkedHashSet<>(found);
             set.removeAll(loadShortcuts());
             final List<String> pkgs = new ArrayList<>(set);
             Collections.sort(pkgs);
@@ -885,6 +883,212 @@ public class MainActivity extends Activity {
         sendMouseMethod(m);
     }
 
+    // ------------------------------------------------------------------ liste des applications (robuste)
+
+    private interface AppsCb {
+        void on(Set<String> packages, String raw);
+    }
+
+    /** Plusieurs méthodes, délais longs (la TV est lente) ; affiche la sortie brute si rien n'est trouvé. */
+    private void listApps(final boolean silent, final AppsCb cb) {
+        exec.execute(() -> {
+            try {
+                StringBuilder raw = new StringBuilder();
+                Set<String> set = new LinkedHashSet<>();
+                String[] cmds = {
+                        "pm list packages -3 2>&1",
+                        "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER 2>&1",
+                        "pm query-activities --components -a android.intent.action.MAIN -c android.intent.category.LAUNCHER 2>&1",
+                };
+                for (String c : cmds) {
+                    String out = adb.shell(c, 30000);
+                    raw.append("$ ").append(c.substring(0, Math.min(40, c.length()))).append("\n").append(out).append("\n");
+                    set.addAll(parseLaunchable(out));
+                }
+                if (set.isEmpty()) {
+                    String out = adb.shell("cmd package list packages 2>&1", 30000);
+                    raw.append("$ cmd package list packages\n").append(out).append("\n");
+                    set.addAll(parseLaunchable(out));
+                }
+                final Set<String> fs = set;
+                final String fr = raw.toString();
+                onUi(() -> {
+                    if (fs.isEmpty()) {
+                        if (!silent) {
+                            new AlertDialog.Builder(this)
+                                    .setTitle("Aucune application détectée")
+                                    .setMessage("Réponse de la TV :\n\n" + fr.substring(0, Math.min(900, fr.length())))
+                                    .setPositiveButton("OK", null).show();
+                        }
+                    } else {
+                        cb.on(fs, fr);
+                    }
+                });
+            } catch (IOException e) {
+                final String msg = e.getMessage();
+                onUi(() -> {
+                    setStatus("Liste des applications impossible : " + msg, RED);
+                    setHeaderCollapsed(false);
+                    refreshStates();
+                });
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------ commande vocale
+
+    private static String norm(String s) {
+        String n = Normalizer.normalize(s.toLowerCase(Locale.ROOT), Normalizer.Form.NFD).replaceAll("\\p{M}", "");
+        return n.replaceAll("[^a-z0-9 ]", " ").replaceAll("\\s+", " ").trim();
+    }
+
+    private void startVoice(boolean dictation) {
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fr-FR");
+        i.putExtra(RecognizerIntent.EXTRA_PROMPT, dictation ? "Dictez le texte à envoyer à la TV…" : "Dites une commande…");
+        try {
+            startActivityForResult(i, dictation ? REQ_DICT : REQ_VOICE);
+        } catch (ActivityNotFoundException e) {
+            toast("Reconnaissance vocale indisponible sur ce téléphone.");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if ((req != REQ_VOICE && req != REQ_DICT) || res != RESULT_OK || data == null) return;
+        ArrayList<String> r = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+        if (r == null || r.isEmpty()) return;
+        String heard = r.get(0);
+        if (req == REQ_DICT) {
+            sendText(heard);
+            toast("Envoyé : " + heard);
+        } else {
+            handleVoice(heard);
+        }
+    }
+
+    private static int firstNumber(String n, int def) {
+        Matcher m = Pattern.compile("\\d+").matcher(n);
+        if (m.find()) {
+            try {
+                return Math.max(1, Math.min(20, Integer.parseInt(m.group())));
+            } catch (NumberFormatException ignored) { }
+        }
+        return def;
+    }
+
+    private static boolean has(String n, String... words) {
+        for (String w : words) {
+            if ((" " + n + " ").contains(" " + w + " ")) return true;
+        }
+        return false;
+    }
+
+    private void keys(int code, int count) {
+        for (int i = 0; i < count; i++) sendAdbKey(code);
+    }
+
+    private void handleVoice(final String heard) {
+        final String n = norm(heard);
+        toast("🎤 " + heard);
+
+        if (has(n, "muet", "mute", "sourdine", "silence") || n.contains("coupe le son")) {
+            press(RKey.ALL.get("mute"));
+        } else if (has(n, "volume", "son") || n.contains("plus fort") || n.contains("moins fort")) {
+            boolean down = has(n, "moins", "baisse", "baisser", "diminue", "diminuer", "bas", "doucement");
+            boolean up = has(n, "plus", "monte", "monter", "augmente", "augmenter", "fort", "haut");
+            if (down) keys(25, firstNumber(n, 3));
+            else if (up) keys(24, firstNumber(n, 3));
+            else toast("Volume : dites « plus » ou « moins ».");
+        } else if (has(n, "chaine", "chaines")) {
+            Matcher m = Pattern.compile("\\d+").matcher(n);
+            if (m.find()) {
+                for (char c : m.group().toCharArray()) sendAdbKey(7 + (c - '0'));
+            } else if (has(n, "suivante", "plus", "haut", "monte")) {
+                sendAdbKey(166);
+            } else if (has(n, "precedente", "moins", "bas", "descend")) {
+                sendAdbKey(167);
+            } else {
+                toast("Chaîne : dites un numéro, « suivante » ou « précédente ».");
+            }
+        } else if (has(n, "allume", "eteins", "eteindre", "veille", "power")) {
+            press(RKey.ALL.get("power"));
+        } else if (n.contains("accueil") || has(n, "home")) {
+            sendAdbKey(3);
+        } else if (has(n, "menu")) {
+            sendAdbKey(82);
+        } else if (n.contains("parametres") || n.contains("reglages")) {
+            adbRun("am start -a android.settings.SETTINGS", null);
+        } else if (n.equals("retour") || n.equals("back") || n.equals("precedent")) {
+            sendAdbKey(4);
+        } else if (n.equals("ok") || n.equals("valide") || n.equals("valider") || n.equals("entree") || n.equals("selectionne")) {
+            sendAdbKey(23);
+        } else if (n.equals("haut")) {
+            sendAdbKey(19);
+        } else if (n.equals("bas")) {
+            sendAdbKey(20);
+        } else if (n.equals("gauche")) {
+            sendAdbKey(21);
+        } else if (n.equals("droite")) {
+            sendAdbKey(22);
+        } else if (has(n, "pause", "lecture", "play", "joue")) {
+            sendAdbKey(85);
+        } else if (has(n, "stop", "arrete")) {
+            sendAdbKey(86);
+        } else if (has(n, "avance")) {
+            sendAdbKey(90);
+        } else if (has(n, "recule")) {
+            sendAdbKey(89);
+        } else {
+            for (String p : new String[]{"ecris ", "tape ", "saisis ", "dicte ", "cherche ", "recherche ", "trouve "}) {
+                if (n.startsWith(p)) {
+                    sendText(n.substring(p.length()));
+                    return;
+                }
+            }
+            for (String p : new String[]{"ouvre ", "ouvrir ", "lance ", "lancer ", "demarre ", "demarrer ", "va sur ", "mets ", "met ", "affiche "}) {
+                if (n.startsWith(p)) {
+                    openAppByName(n.substring(p.length()).replaceFirst("^((l|le|la|les|un|une|application|appli) )+", ""));
+                    return;
+                }
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("Commande non reconnue")
+                    .setMessage("J'ai entendu : « " + heard + " »\n\nExemples : « volume plus », « muet », « chaîne 5 », « ouvre YouTube », « accueil », « retour », « écris bonjour ».")
+                    .setPositiveButton("Écrire sur la TV", (d, w) -> sendText(heard))
+                    .setNegativeButton("Annuler", null)
+                    .show();
+        }
+    }
+
+    private void openAppByName(final String name) {
+        final String q = name.replace(" ", "");
+        if (q.isEmpty()) return;
+        for (String pkg : loadShortcuts()) {
+            String lab = norm(appLabel(pkg)).replace(" ", "");
+            if (lab.contains(q) || q.contains(lab)) {
+                launchApp(pkg);
+                return;
+            }
+        }
+        if (!wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        listApps(false, (found, raw) -> {
+            for (String pkg : found) {
+                String lab = norm(appLabel(pkg)).replace(" ", "");
+                if (pkg.toLowerCase(Locale.ROOT).contains(q) || lab.equals(q)) {
+                    launchApp(pkg);
+                    return;
+                }
+            }
+            toast("Application introuvable : " + name);
+        });
+    }
+
     private void showMore() {
         final String[] items = {"Curseur de la TV (touche MOUSE)", "Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
         new AlertDialog.Builder(this)
@@ -898,12 +1102,13 @@ public class MainActivity extends Activity {
 
     private void setHeaderCollapsed(boolean c) {
         headerBox.setVisibility(c ? View.GONE : View.VISIBLE);
-        gearButton.setText(c ? "⚙ Réglages" : "▲ Masquer");
+        gearButton.setText(c ? "⚙" : "▲");
     }
 
     private void setStatus(String s, int color) {
         status.setText(s);
         status.setTextColor(color);
+        if (gearButton != null) gearButton.setTextColor(color);
         if (miniText != null) {
             miniText.setText("● " + s);
             miniText.setTextColor(color);
@@ -1051,6 +1256,8 @@ public class MainActivity extends Activity {
     }
 
     private void sendText(String t) {
+        t = Normalizer.normalize(t, Normalizer.Form.NFD).replaceAll("\\p{M}", "").replaceAll("[^\\x20-\\x7E]", "");
+        if (t.trim().isEmpty()) return;
         String esc = t.replace(" ", "%s").replace("'", "'\\''");
         adbRun("input text '" + esc + "'", null);
     }
@@ -1101,7 +1308,7 @@ public class MainActivity extends Activity {
                     setHeaderCollapsed(true);
                     adbRun("wm size", this::parseScreenSize);
                     if (!prefs.getBoolean("sc_seeded2", false) && loadShortcuts().isEmpty()) {
-                        adbRun(LIST_APPS_CMD, this::seedShortcuts);
+                        listApps(true, (found, raw) -> seedShortcuts(found));
                     }
                     refreshStates();
                 });
@@ -1187,8 +1394,8 @@ public class MainActivity extends Activity {
             toast("Connectez d'abord la TV en WiFi.");
             return;
         }
-        adbRun(LIST_APPS_CMD, out -> {
-            List<String> pkgs = new ArrayList<>(parseLaunchable(out));
+        listApps(false, (found, raw) -> {
+            List<String> pkgs = new ArrayList<>(found);
             Collections.sort(pkgs);
             pkgs.add(0, "⚙ Paramètres Android");
             final String[] items = pkgs.toArray(new String[0]);
@@ -1471,6 +1678,7 @@ public class MainActivity extends Activity {
                 + "MODES\n"
                 + "Auto : WiFi si connecté, sinon infrarouge (Power utilise l'IR si son code est enregistré).\n"
                 + "RACCOURCIS : rangée sous les modes ; « ＋ Raccourci » pour ajouter une appli de la TV, appui long pour en retirer.\n"
+                + "VOIX : bouton 🎤 en haut (commandes : volume plus/moins, muet, chaîne 5, ouvre YouTube, accueil, retour, écris…) ; 🎤 dans l'écran souris = dictée.\n"
                 + "CURSEUR TV : menu Plus ⋯ → « Curseur de la TV » pour apprendre la touche MOUSE de la télécommande d'origine.\n"
                 + "MOUSE : ouvre le mode souris (zone tactile + clavier) ; « Fermer » ou Retour revient à la télécommande.\n"
                 + "Touches grisées : indisponibles dans le mode actuel (pas de connexion, ou code IR inconnu).";
