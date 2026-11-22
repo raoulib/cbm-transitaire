@@ -377,21 +377,51 @@ public class MainActivity extends Activity {
         }
         styleButton(b, bg, fg);
         if (id.equals("volup") || id.equals("chup") || id.equals("voldown") || id.equals("chdown")) b.setTextSize(15);
+        // Une touche ne part qu'à un vrai appui (relâchement sans glissement) : faire défiler la page
+        // avec le doigt ne déclenche plus rien. Les touches à répétition démarrent après un maintien.
+        final int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+        final boolean[] st = new boolean[2]; // [0] = maintien lancé, [1] = annulé
+        final Runnable hold = () -> {
+            st[0] = true;
+            b.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+            press(k);
+            repeatKey = k;
+            ui.postDelayed(repeater, 130);
+        };
         b.setOnTouchListener((v, e) -> {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    st[0] = false;
+                    st[1] = false;
                     v.setAlpha(0.55f);
-                    v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                    press(k);
-                    if (k.repeat) {
-                        repeatKey = k;
-                        ui.postDelayed(repeater, 450);
+                    if (k.repeat) ui.postDelayed(hold, 350);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (!st[1] && !st[0] && (e.getX() < -slop || e.getX() > v.getWidth() + slop
+                            || e.getY() < -slop || e.getY() > v.getHeight() + slop)) {
+                        st[1] = true;
+                        ui.removeCallbacks(hold);
+                        applyAlpha(k);
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
+                    ui.removeCallbacks(hold);
+                    if (st[0]) {
+                        repeatKey = null;
+                        ui.removeCallbacks(repeater);
+                    } else if (!st[1]) {
+                        v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                        press(k);
+                    }
+                    applyAlpha(k);
+                    return true;
                 case MotionEvent.ACTION_CANCEL:
-                    repeatKey = null;
-                    ui.removeCallbacks(repeater);
+                    ui.removeCallbacks(hold);
+                    if (st[0]) {
+                        repeatKey = null;
+                        ui.removeCallbacks(repeater);
+                    }
+                    st[1] = true;
                     applyAlpha(k);
                     return true;
                 default:
