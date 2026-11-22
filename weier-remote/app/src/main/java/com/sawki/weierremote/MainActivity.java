@@ -731,12 +731,15 @@ public class MainActivity extends Activity {
             }
             ir.sendNec(a[0], a[1], cur[0]);
         };
+        final boolean[] first = {true};
         final Runnable stepAuto = new Runnable() {
             @Override public void run() {
-                if (cur[0] >= 255) return;
+                // cur[0] est toujours le code qui vient d'être envoyé (celui affiché)
+                if (first[0]) first[0] = false;
+                else if (cur[0] < 255) cur[0]++;
+                else return;
                 sendCur.run();
                 showCmd.run();
-                cur[0]++;
                 ui.postDelayed(this, 700);
             }
         };
