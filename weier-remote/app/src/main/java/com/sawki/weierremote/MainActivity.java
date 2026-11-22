@@ -31,6 +31,8 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.speech.RecognizerIntent;
 import java.text.Normalizer;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import android.widget.HorizontalScrollView;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -1119,6 +1121,58 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ------------------------------------------------------------------ minuterie d'extinction (sur la TV)
+
+    private static final String SLEEP_PID = "/data/local/tmp/wsleep.pid";
+
+    private void showSleepTimer() {
+        long end = prefs.getLong("sleep_end", 0);
+        String title = "Éteindre la TV dans…";
+        if (end > System.currentTimeMillis()) {
+            title += "\n(minuterie active : extinction à "
+                    + new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(end)) + ")";
+        }
+        final String[] labels = {"10 minutes", "20 minutes", "30 minutes", "45 minutes", "1 heure",
+                "1 h 30", "2 heures", "3 heures", "Éteindre maintenant", "Annuler la minuterie"};
+        final int[] minutes = {10, 20, 30, 45, 60, 90, 120, 180};
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(labels, (d, w) -> {
+                    if (w < minutes.length) startSleepTimer(minutes[w]);
+                    else if (w == minutes.length) sendAdbKey(223);
+                    else cancelSleepTimer();
+                }).show();
+    }
+
+    private void startSleepTimer(final int minutes) {
+        final long secs = minutes * 60L;
+        // la minuterie tourne sur la TV : elle continue même si l'app est fermée
+        adbRun("kill $(cat " + SLEEP_PID + " 2>/dev/null) 2>/dev/null; "
+                + "nohup sh -c 'echo $$ > " + SLEEP_PID + "; sleep " + secs
+                + "; input keyevent 223; rm " + SLEEP_PID + "' >/dev/null 2>&1 &", null);
+        // vérification : le processus de minuterie existe-t-il sur la TV ?
+        adbRun("sleep 1; p=$(cat " + SLEEP_PID + " 2>/dev/null); if [ -n \"$p\" ] && [ -d /proc/$p ]; then echo OK; else echo KO; fi", out -> {
+            if (out.contains("OK")) {
+                long end = System.currentTimeMillis() + secs * 1000;
+                prefs.edit().putLong("sleep_end", end).apply();
+                toast("La TV s'éteindra à " + new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(end)));
+            } else {
+                prefs.edit().remove("sleep_end").apply();
+                new AlertDialog.Builder(this)
+                        .setTitle("Minuterie non démarrée")
+                        .setMessage("La TV n'a pas conservé la minuterie (processus arrêté). Dites-le-moi, je chercherai une autre méthode.")
+                        .setPositiveButton("OK", null).show();
+            }
+        });
+    }
+
+    private void cancelSleepTimer() {
+        adbRun("kill $(cat " + SLEEP_PID + " 2>/dev/null) 2>/dev/null; rm " + SLEEP_PID + " 2>/dev/null; echo done", out -> {
+            prefs.edit().remove("sleep_end").apply();
+            toast("Minuterie annulée.");
+        });
+    }
+
     private void showMore() {
         final String[] items = {"Curseur de la TV (touche MOUSE)", "Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
         new AlertDialog.Builder(this)
@@ -1200,6 +1254,10 @@ public class MainActivity extends Activity {
     private void press(RKey k) {
         if (k.id.equals("mouse")) {
             setMouse(!mouseOn);
+            return;
+        }
+        if (k.id.equals("sleep") && mode != Mode.IR && wifiOk()) {
+            showSleepTimer();
             return;
         }
         boolean wifi = wifiOk();
