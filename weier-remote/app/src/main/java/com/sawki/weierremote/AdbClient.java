@@ -52,6 +52,23 @@ public class AdbClient implements Closeable {
     private int nextLocalId = 1;
     private volatile boolean connected = false;
 
+    /** Si non nul, chaque message ADB envoyé/reçu y est consigné (outil de diagnostic). */
+    public volatile StringBuilder trace;
+
+    private void log(String dir, int cmd, int a0, int a1, byte[] d) {
+        StringBuilder t = trace;
+        if (t == null) return;
+        String name = cmd == A_CNXN ? "CNXN" : cmd == A_AUTH ? "AUTH" : cmd == A_OPEN ? "OPEN"
+                : cmd == A_OKAY ? "OKAY" : cmd == A_CLSE ? "CLSE" : cmd == A_WRTE ? "WRTE" : "?";
+        String txt = "";
+        if (d != null && d.length > 0) {
+            int n = Math.min(d.length, 60);
+            txt = " '" + new String(d, 0, n, StandardCharsets.UTF_8).replaceAll("[^\\x20-\\x7E]", ".") + "'";
+        }
+        t.append(dir).append(' ').append(name).append(' ').append(a0).append(' ').append(a1)
+                .append(" len=").append(d == null ? 0 : d.length).append(txt).append('\n');
+    }
+
     public AdbClient(KeyPair keyPair) {
         this.keyPair = keyPair;
     }
@@ -160,6 +177,7 @@ public class AdbClient implements Closeable {
 
     private void send(int cmd, int arg0, int arg1, byte[] data) throws IOException {
         int len = data == null ? 0 : data.length;
+        log("->", cmd, arg0, arg1, data);
         ByteBuffer b = ByteBuffer.allocate(24 + len).order(ByteOrder.LITTLE_ENDIAN);
         b.putInt(cmd).putInt(arg0).putInt(arg1).putInt(len).putInt(checksum(data)).putInt(cmd ^ 0xffffffff);
         if (data != null) b.put(data);
@@ -183,6 +201,7 @@ public class AdbClient implements Closeable {
         }
         m.data = new byte[len];
         if (len > 0) in.readFully(m.data);
+        log("<-", m.cmd, m.arg0, m.arg1, m.data);
         return m;
     }
 

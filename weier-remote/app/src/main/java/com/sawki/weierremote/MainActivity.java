@@ -243,7 +243,7 @@ public class MainActivity extends Activity {
         addRow(root, key("n1"), key("n2"), key("n3"));
         addRow(root, key("n4"), key("n5"), key("n6"));
         addRow(root, key("n7"), key("n8"), key("n9"));
-        addRow(root, key("n0"), key("recall"), key("sleep"));
+        addRow(root, key("recall"), key("n0"), key("sleep"));
         addRow(root, key("volup"), key("ttx"), key("chup"));
         addRow(root, key("voldown"), key("home"), key("chdown"));
         addRow(root, key("display"), key("up"), key("source"));
@@ -1166,13 +1166,40 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Affiche la réponse brute de la TV et les messages ADB échangés (pour comprendre une liste vide). */
+    private void showAdbTest() {
+        if (!wifiOk()) {
+            toast("Connectez d'abord la TV en WiFi.");
+            return;
+        }
+        exec.execute(() -> {
+            String out;
+            adb.trace = new StringBuilder();
+            try {
+                out = adb.shell("echo TEST_OK; id; getprop ro.build.version.release; pm list packages | head -3", 20000);
+            } catch (IOException e) {
+                out = "Erreur : " + e.getMessage();
+            }
+            StringBuilder tb = adb.trace;
+            adb.trace = null;
+            final String fo = out;
+            final String ft = tb == null ? "" : tb.toString();
+            onUi(() -> new AlertDialog.Builder(this)
+                    .setTitle("Test de la liaison ADB")
+                    .setMessage("Sortie de la TV :\n" + (fo.trim().isEmpty() ? "(vide)" : fo.trim())
+                            + "\n\nÉchanges ADB :\n" + ft.substring(0, Math.min(1500, ft.length())))
+                    .setPositiveButton("OK", null).show());
+        });
+    }
+
     private void showMore() {
-        final String[] items = {"Curseur de la TV (touche MOUSE)", "Codes IR (infrarouge)", "Diagnostic réseau", "Aide"};
+        final String[] items = {"Curseur de la TV (touche MOUSE)", "Codes IR (infrarouge)", "Diagnostic réseau", "Test de la liaison ADB", "Aide"};
         new AlertDialog.Builder(this)
                 .setItems(items, (d, w) -> {
                     if (w == 0) showMouseSetup();
                     else if (w == 1) showIrLab();
                     else if (w == 2) showDiagnostic();
+                    else if (w == 3) showAdbTest();
                     else showHelp();
                 }).show();
     }
